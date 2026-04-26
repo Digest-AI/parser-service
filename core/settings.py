@@ -8,21 +8,24 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 dotenv.load_dotenv(BASE_DIR / ".env")
 
-# Secrets
+# ===== Secrets =====
 
-SECRET_KEY = os.environ.get("SECRET_KEY")
-DEBUG = os.environ.get("ENVIRONMENT") != "production"
+SECRET_KEY = os.environ.get("SECRET_KEY", "dev-secret-key")
+ENVIRONMENT = os.environ.get("ENVIRONMENT", "development")
+DEBUG = ENVIRONMENT != "production"
 
-HOST = os.environ.get("HOST")
+SERVICE_ID = os.environ.get("SERVICE_ID", "test-service")
+SERVICE_SECRET = os.environ.get("SERVICE_SECRET", "")
+
+HOST = os.environ.get("HOST", "127.0.0.1:8000")
 SELF_URL = f"http{'' if DEBUG else 's'}://{HOST}"
-ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS").split(",")
-CORS_ALLOWED_ORIGINS = os.environ.get("CORS_ALLOWED_ORIGINS").split(",")
 
-SERVICE_ID = os.environ.get("SERVICE_ID")
-SERVICE_SECRET = os.environ.get("SERVICE_SECRET")
+ALLOWED_HOSTS = ["*"]
 
+cors_env = os.environ.get("CORS_ALLOWED_ORIGINS", "")
+CORS_ALLOWED_ORIGINS = cors_env.split(",") if cors_env else ["http://127.0.0.1:8000"]
 
-# Installed Apps
+# ===== Installed Apps =====
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -38,7 +41,7 @@ INSTALLED_APPS = [
     "drf_spectacular_sidecar",
 ]
 
-# Middleware
+# ===== Middleware =====
 
 MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
@@ -51,13 +54,13 @@ MIDDLEWARE = [
     "utils.i18n_middleware.I18nMiddleware",
 ]
 
-# Application
+# ===== Application =====
 
 ROOT_URLCONF = "core.urls"
 WSGI_APPLICATION = "core.wsgi.application"
 ASGI_APPLICATION = "core.asgi.application"
 
-# Templates
+# ===== Templates =====
 
 TEMPLATES = [
     {
@@ -75,7 +78,7 @@ TEMPLATES = [
     },
 ]
 
-# DRF
+# ===== DRF =====
 
 REST_FRAMEWORK = {
     "DEFAULT_RENDERER_CLASSES": [
@@ -88,15 +91,15 @@ REST_FRAMEWORK = {
     "EXCEPTION_HANDLER": "utils.exception_handler.exception_handler",
 }
 
-# DRF Spectacular
+# ===== DRF Spectacular =====
 
 SPECTACULAR_SETTINGS = {
-    "TITLE": os.environ.get("SERVICE_ID").replace("-service", "").title() + " API",
+    "TITLE": SERVICE_ID.replace("-service", "").title() + " API",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": True,
 }
 
-# Databases
+# ===== Databases =====
 
 DATABASES = {
     "default": {
@@ -105,7 +108,7 @@ DATABASES = {
     }
 }
 
-# Caches
+# ===== Caches =====
 
 CACHES = {
     "default": {
@@ -114,7 +117,7 @@ CACHES = {
     }
 }
 
-# Static and Media
+# ===== Static / Media =====
 
 STATIC_URL = "/static/"
 STATIC_ROOT = BASE_DIR / "static"
@@ -125,7 +128,7 @@ MEDIA_ROOT = BASE_DIR / "media"
 PUBLIC_URL = "/public/"
 PUBLIC_ROOT = BASE_DIR / "public"
 
-# Security
+# ===== Security =====
 
 SECURE_BROWSER_XSS_FILTER = True
 SECURE_CONTENT_TYPE_NOSNIFF = True
@@ -134,9 +137,8 @@ SECURE_REFERRER_POLICY = "strict-origin-when-cross-origin"
 SECURE_PROXY_SSL_HEADER: tuple[str, str] | None = None
 SECURE_SSL_REDIRECT = False
 
-# Production security (applied automatically if ENVIRONMENT=production)
-if os.environ.get("ENVIRONMENT") == "production":
-    SECURE_HSTS_SECONDS = 31536000  # 1 year
+if ENVIRONMENT == "production":
+    SECURE_HSTS_SECONDS = 31536000
     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
     SECURE_HSTS_PRELOAD = True
     SECURE_PROXY_SSL_HEADER = (
@@ -145,6 +147,8 @@ if os.environ.get("ENVIRONMENT") == "production":
     )
     SECURE_SSL_REDIRECT = True
 
+# ===== CORS =====
+
 CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOW_HEADERS = list(default_headers) + [
     "cache-control",
@@ -152,7 +156,7 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
     "expires",
 ]
 
-# Misc
+# ===== Misc =====
 
 LANGUAGE_CODE = "en-us"
 SUPPORTED_LANGUAGES = ("en", "ru", "ro")
