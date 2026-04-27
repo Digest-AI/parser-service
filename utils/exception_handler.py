@@ -102,13 +102,19 @@ def exception_handler(exc: Any, context: Any) -> Response:
             print(f"EXCEPTION: {exc_type.__name__}: {exc}", file=sys.stderr)
             print(f"STATUS CODE: {status_code}", file=sys.stderr)
             print("=" * 80, file=sys.stderr)
-            traceback.print_exception(exc_type, exc_value, exc_traceback, file=sys.stderr)
+            traceback.print_exception(
+                exc_type, exc_value, exc_traceback, file=sys.stderr
+            )
             print("=" * 80 + "\n", file=sys.stderr)
 
     # Handle Django ValidationError (from models, etc.)
     if isinstance(exc, DjangoValidationError):
         return Response(
-            {"code": http_status.HTTP_400_BAD_REQUEST, "detail": str(detail), "attr": attr},
+            {
+                "code": http_status.HTTP_400_BAD_REQUEST,
+                "detail": str(detail),
+                "attr": attr,
+            },
             status=http_status.HTTP_400_BAD_REQUEST,
         )
 
@@ -139,4 +145,6 @@ def exception_handler(exc: Any, context: Any) -> Response:
     if not detail or not detail.strip():
         detail = "error"
 
-    return Response({"code": status_code, "detail": str(detail), "attr": attr}, status=status_code)
+    return Response(
+        {"code": status_code, "detail": str(detail), "attr": attr}, status=status_code
+    )

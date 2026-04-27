@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime
+
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
 from rest_framework import filters, status
@@ -29,12 +31,27 @@ class EventPagination(PageNumberPagination):
                 description="Filter by category slug",
                 enum=[c[0] for c in Event.Category.choices],
             ),
-            OpenApiParameter("source", description="Filter by source (e.g. afisha_md)"),
-            OpenApiParameter("city", description="Filter by city"),
+            OpenApiParameter(
+                "source",
+                description="Filter by source slug",
+                enum=[s[0] for s in Event.Source.choices],
+            ),
+            OpenApiParameter("city", description="Filter by city (partial match)"),
+            OpenApiParameter(
+                "venue", description="Filter by venue name (partial match)"
+            ),
             OpenApiParameter("is_free", description="Filter free events (true/false)"),
-            OpenApiParameter("date_from", description="Filter events starting after date (YYYY-MM-DD)"),
-            OpenApiParameter("date_to", description="Filter events starting before date (YYYY-MM-DD)"),
-            OpenApiParameter("q", description="Full-text search in title and description"),
+            OpenApiParameter(
+                "date_from", description="Filter events starting from date (YYYY-MM-DD)"
+            ),
+            OpenApiParameter(
+                "date_to", description="Filter events starting before date (YYYY-MM-DD)"
+            ),
+            OpenApiParameter("price_min", description="Minimum ticket price (MDL)"),
+            OpenApiParameter("price_max", description="Maximum ticket price (MDL)"),
+            OpenApiParameter(
+                "q", description="Full-text search in title, description and venue"
+            ),
         ],
     ),
     retrieve=extend_schema(summary="Get event details"),
@@ -63,7 +80,7 @@ class EventViewSet(ReadOnlyModelViewSet):
         params = self.request.query_params
 
         # Category filter
-        category = params.get("category")
+        category = self.kwargs.get("category_slug") or params.get("category")
         if category:
             qs = qs.filter(category=category)
 
@@ -73,9 +90,14 @@ class EventViewSet(ReadOnlyModelViewSet):
             qs = qs.filter(source=source)
 
         # City filter
-        city = params.get("city")
+        city = self.kwargs.get("city_name") or params.get("city")
         if city:
             qs = qs.filter(city__icontains=city)
+
+        # Venue filter
+        venue = params.get("venue")
+        if venue:
+            qs = qs.filter(venue_name__icontains=venue)
 
         # Free filter
         is_free = params.get("is_free")
@@ -91,15 +113,33 @@ class EventViewSet(ReadOnlyModelViewSet):
         if date_to:
             qs = qs.filter(date_start__date__lte=date_to)
 
-        # Full-text search (in addition to DRF filter backend)
+        # Price range filter
+        price_min = params.get("price_min")
+        if price_min:
+            try:
+                qs = qs.filter(price_from__gte=float(price_min))
+            except ValueError:
+                pass
+
+        price_max = params.get("price_max")
+        if price_max:
+            try:
+                qs = qs.filter(price_from__lte=float(price_max))
+            except ValueError:
+                pass
+
+        # Full-text search
         q = params.get("q")
         if q:
             from django.db.models import Q
+
             qs = qs.filter(
                 Q(title__icontains=q)
                 | Q(title_ru__icontains=q)
                 | Q(title_ro__icontains=q)
                 | Q(description__icontains=q)
+                | Q(description_ru__icontains=q)
+                | Q(description_ro__icontains=q)
                 | Q(venue_name__icontains=q)
             )
 
@@ -112,10 +152,23 @@ class EventViewSet(ReadOnlyModelViewSet):
             "⚠️ Runs in the request thread — for production use a Celery task instead."
         ),
         parameters=[
-            OpenApiParameter("source", description="Source to scrape (afisha_md, iticket_md, cineplex_md). Default: afisha_md"),
-            OpenApiParameter("category", description="Category slug to scrape (default: all)"),
+            OpenApiParameter(
+                "source",
+                description="Source to scrape (afisha_md, iticket_md, cineplex_md). Default: afisha_md",
+            ),
+            OpenApiParameter(
+                "category", description="Category slug to scrape (default: all)"
+            ),
         ],
-        responses={200: {"type": "object", "properties": {"created": {"type": "integer"}, "updated": {"type": "integer"}}}},
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "created": {"type": "integer"},
+                    "updated": {"type": "integer"},
+                },
+            }
+        },
     )
     @action(detail=False, methods=["post"], url_path="scrape")
     def scrape(self, request: Request) -> Response:
@@ -126,15 +179,26 @@ class EventViewSet(ReadOnlyModelViewSet):
         try:
             if source == "cineplex_md":
                 from api.scrapers.cineplex_md import CineplexMdScraper
+
                 scraper = CineplexMdScraper()
             elif source == "iticket_md":
                 from api.scrapers.iticket_md import ALL_CATEGORIES, ITicketMdScraper
-                categories = [category] if category and category in ALL_CATEGORIES else ["all"]
-                scraper = ITicketMdScraper(categories=categories, max_pages_per_category=1)
+
+                categories = (
+                    [category] if category and category in ALL_CATEGORIES else ["all"]
+                )
+                scraper = ITicketMdScraper(
+                    categories=categories, max_pages_per_category=1
+                )
             else:
                 from api.scrapers.afisha_md import ALL_CATEGORIES, AfishaMdScraper
-                categories = [category] if category and category in ALL_CATEGORIES else None
-                scraper = AfishaMdScraper(categories=categories, max_pages_per_category=1)
+
+                categories = (
+                    [category] if category and category in ALL_CATEGORIES else None
+                )
+                scraper = AfishaMdScraper(
+                    categories=categories, max_pages_per_category=1
+                )
 
             created, updated = scraper.run_and_save()
         except ImportError as exc:
@@ -152,12 +216,88 @@ class EventViewSet(ReadOnlyModelViewSet):
 
     @extend_schema(
         summary="Get upcoming events",
-        description="Returns events starting from today, ordered by date.",
+        description="Returns events starting from now onward, ordered by date.",
     )
     @action(detail=False, methods=["get"], url_path="upcoming")
     def upcoming(self, request: Request) -> Response:
-        """GET /events/upcoming/ — events from today onward."""
-        qs = self.get_queryset().filter(date_start__gte=timezone.now())
+        """GET /events/upcoming/ — events from now onward."""
+        qs = (
+            self.get_queryset()
+            .filter(date_start__gte=timezone.now())
+            .order_by("date_start")
+        )
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = EventListSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = EventListSerializer(qs, many=True)
+        return Response(serializer.data)
+
+    @extend_schema(
+        summary="Get today's events",
+        description="Returns all active events scheduled for today.",
+    )
+    @action(detail=False, methods=["get"], url_path="today")
+    def today(self, request: Request) -> Response:
+        """GET /events/today/ — events happening today."""
+        today = timezone.localdate()
+        qs = self.get_queryset().filter(date_start__date=today).order_by("date_start")
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = EventListSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = EventListSerializer(qs, many=True)
+        return Response(serializer.data)
+
+    @extend_schema(
+        summary="Get this week's events",
+        description="Returns all active events scheduled within the current calendar week (Mon–Sun).",
+    )
+    @action(detail=False, methods=["get"], url_path="this-week")
+    def this_week(self, request: Request) -> Response:
+        """GET /events/this-week/ — events in the current calendar week."""
+        today = timezone.localdate()
+        week_start = today - datetime.timedelta(days=today.weekday())  # Monday
+        week_end = week_start + datetime.timedelta(days=6)  # Sunday
+        qs = (
+            self.get_queryset()
+            .filter(date_start__date__gte=week_start, date_start__date__lte=week_end)
+            .order_by("date_start")
+        )
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = EventListSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = EventListSerializer(qs, many=True)
+        return Response(serializer.data)
+
+    @extend_schema(
+        summary="Get events by date",
+        description="Returns all active events on a specific date. Pass `date=YYYY-MM-DD` as a query parameter.",
+        parameters=[
+            OpenApiParameter(
+                "date",
+                description="Target date in YYYY-MM-DD format (defaults to today)",
+                required=False,
+            ),
+        ],
+    )
+    @action(detail=False, methods=["get"], url_path="by-date")
+    def by_date(self, request: Request) -> Response:
+        """GET /events/by-date/?date=YYYY-MM-DD — events on a specific date."""
+        raw_date = request.query_params.get("date")
+        if raw_date:
+            try:
+                target = datetime.date.fromisoformat(raw_date)
+            except ValueError:
+                return Response(
+                    {"error": "Invalid date format. Use YYYY-MM-DD."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            target = timezone.localdate()
+
+        qs = self.get_queryset().filter(date_start__date=target).order_by("date_start")
         page = self.paginate_queryset(qs)
         if page is not None:
             serializer = EventListSerializer(page, many=True)

@@ -148,7 +148,10 @@ class ITicketMdScraper(BaseScraper):
 
             self.logger.info(
                 "Category %-20s  page %d: %d cards (%d new)",
-                category, page_num, len(cards), len(new_cards),
+                category,
+                page_num,
+                len(cards),
+                len(new_cards),
             )
 
             # If no cards were found, we reached the end of the pagination
@@ -215,7 +218,9 @@ class ITicketMdScraper(BaseScraper):
             if not item.get("title") or not item.get("url"):
                 continue
 
-            price_from, price_to, is_free = self._parse_price(item.get("priceLow", ""), item.get("priceHigh", ""))
+            price_from, price_to, is_free = self._parse_price(
+                item.get("priceLow", ""), item.get("priceHigh", "")
+            )
             date_start = self._parse_date(item.get("startDate", ""))
 
             results.append(
@@ -231,7 +236,7 @@ class ITicketMdScraper(BaseScraper):
                     date_start=date_start,
                     venue_name=item.get("venueName", ""),
                     venue_address=item.get("venueAddress", ""),
-                    city="Chișinău", # iTicket doesn't clearly split city, assuming Chisinau for now
+                    city="Chișinău",  # iTicket doesn't clearly split city, assuming Chisinau for now
                     price_from=price_from,
                     price_to=price_to,
                     currency=item.get("currency", "MDL"),
@@ -248,8 +253,10 @@ class ITicketMdScraper(BaseScraper):
         try:
             page.goto(url, wait_until="networkidle", timeout=30_000)
             return True
-        except Exception as exc:
-            self.logger.warning("networkidle timeout for %s, retrying with domcontentloaded…", url)
+        except Exception:
+            self.logger.warning(
+                "networkidle timeout for %s, retrying with domcontentloaded…", url
+            )
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=20_000)
                 page.wait_for_timeout(3_000)
@@ -274,7 +281,9 @@ class ITicketMdScraper(BaseScraper):
         except ValueError:
             return None
 
-    def _parse_price(self, low: str, high: str) -> tuple[Decimal | None, Decimal | None, bool]:
+    def _parse_price(
+        self, low: str, high: str
+    ) -> tuple[Decimal | None, Decimal | None, bool]:
         """
         Parse price values from the schema.
         Returns (price_from, price_to, is_free).
@@ -288,7 +297,7 @@ class ITicketMdScraper(BaseScraper):
                 p_low = Decimal(low)
             except InvalidOperation:
                 pass
-        
+
         if high:
             try:
                 p_high = Decimal(high)
@@ -297,5 +306,5 @@ class ITicketMdScraper(BaseScraper):
 
         if p_low == Decimal("0") and (p_high is None or p_high == Decimal("0")):
             is_free = True
-            
+
         return p_low, p_high, is_free

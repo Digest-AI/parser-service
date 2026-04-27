@@ -4,15 +4,24 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     dependencies = [
-        ('api', '0002_event_ticket_links'),
+        ("api", "0002_event_ticket_links"),
     ]
 
     operations = [
         migrations.AlterField(
-            model_name='event',
-            name='source',
-            field=models.CharField(choices=[('afisha_md', 'Afisha.md'), ('iticket_md', 'iTicket.md'), ('mticket_md', 'mTicket.md'), ('fest_md', 'Fest.md'), ('cineplex_md', 'Cineplex.md')], db_index=True, max_length=32),
+            model_name="event",
+            name="source",
+            field=models.CharField(
+                choices=[
+                    ("afisha_md", "Afisha.md"),
+                    ("iticket_md", "iTicket.md"),
+                    ("mticket_md", "mTicket.md"),
+                    ("fest_md", "Fest.md"),
+                    ("cineplex_md", "Cineplex.md"),
+                ],
+                db_index=True,
+                max_length=32,
+            ),
         ),
     ]

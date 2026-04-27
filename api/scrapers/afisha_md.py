@@ -85,15 +85,33 @@ _EVENT_URL_RE = re.compile(
 
 # Russian month names → month numbers
 _RU_MONTHS: dict[str, int] = {
-    "января": 1, "февраля": 2, "марта": 3, "апреля": 4,
-    "мая": 5, "июня": 6, "июля": 7, "августа": 8,
-    "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
+    "января": 1,
+    "февраля": 2,
+    "марта": 3,
+    "апреля": 4,
+    "мая": 5,
+    "июня": 6,
+    "июля": 7,
+    "августа": 8,
+    "сентября": 9,
+    "октября": 10,
+    "ноября": 11,
+    "декабря": 12,
 }
 # Romanian month names
 _RO_MONTHS: dict[str, int] = {
-    "ianuarie": 1, "februarie": 2, "martie": 3, "aprilie": 4,
-    "mai": 5, "iunie": 6, "iulie": 7, "august": 8,
-    "septembrie": 9, "octombrie": 10, "noiembrie": 11, "decembrie": 12,
+    "ianuarie": 1,
+    "februarie": 2,
+    "martie": 3,
+    "aprilie": 4,
+    "mai": 5,
+    "iunie": 6,
+    "iulie": 7,
+    "august": 8,
+    "septembrie": 9,
+    "octombrie": 10,
+    "noiembrie": 11,
+    "decembrie": 12,
 }
 
 
@@ -211,7 +229,10 @@ class AfishaMdScraper(BaseScraper):
 
             self.logger.info(
                 "Category %-20s  page %d: %d cards (%d new)",
-                category, page_num, len(cards), len(new_cards),
+                category,
+                page_num,
+                len(cards),
+                len(new_cards),
             )
 
             if not cards or not self._has_next_page(page):
@@ -322,8 +343,10 @@ class AfishaMdScraper(BaseScraper):
         try:
             page.goto(url, wait_until="networkidle", timeout=30_000)
             return True
-        except Exception as exc:
-            self.logger.warning("networkidle timeout for %s, retrying with domcontentloaded…", url)
+        except Exception:
+            self.logger.warning(
+                "networkidle timeout for %s, retrying with domcontentloaded…", url
+            )
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=20_000)
                 page.wait_for_timeout(3_000)
@@ -399,7 +422,9 @@ class AfishaMdScraper(BaseScraper):
                 try:
                     dt = datetime(year, month, day)
                     # If date already passed this year → bump to next year
-                    if _aware(dt) < now.replace(hour=0, minute=0, second=0, microsecond=0):
+                    if _aware(dt) < now.replace(
+                        hour=0, minute=0, second=0, microsecond=0
+                    ):
                         dt = datetime(year + 1, month, day)
                     # Extract optional time "19:00"
                     t = re.search(r"(\d{1,2}):(\d{2})", raw)
@@ -413,12 +438,13 @@ class AfishaMdScraper(BaseScraper):
         m = re.search(r"(\d{1,2})\.(\d{1,2})\.(\d{4})", raw)
         if m:
             try:
-                return _aware(datetime(int(m.group(3)), int(m.group(2)), int(m.group(1))))
+                return _aware(
+                    datetime(int(m.group(3)), int(m.group(2)), int(m.group(1)))
+                )
             except ValueError:
                 pass
 
         return None
-
 
     def _parse_price(self, raw: str) -> tuple[Decimal | None, Decimal | None, bool]:
         """
@@ -439,7 +465,9 @@ class AfishaMdScraper(BaseScraper):
         decimals: list[Decimal] = []
         for n in numbers:
             try:
-                decimals.append(Decimal(n.replace("\u202f", "").replace(" ", "").replace(",", ".")))
+                decimals.append(
+                    Decimal(n.replace("\u202f", "").replace(" ", "").replace(",", "."))
+                )
             except InvalidOperation:
                 pass
 
