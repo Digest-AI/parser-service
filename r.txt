@@ -1,5 +1,4 @@
 asgiref==3.11.1
-psycopg2-binary==2.9.10
 attrs==26.1.0
 Django==5.2.13
 django-cors-headers==4.9.0
