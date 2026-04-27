@@ -54,8 +54,12 @@ class Event(models.Model):
     city = models.CharField(max_length=128, default="Кишинёв", db_index=True)
 
     # Pricing
-    price_from = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
-    price_to = models.DecimalField(max_digits=10, decimal_places=2, null=True, blank=True)
+    price_from = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
+    price_to = models.DecimalField(
+        max_digits=10, decimal_places=2, null=True, blank=True
+    )
     currency = models.CharField(max_length=8, default="MDL")
     is_free = models.BooleanField(default=False, db_index=True)
 

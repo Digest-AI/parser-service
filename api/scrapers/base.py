@@ -82,7 +82,9 @@ class BaseScraper(ABC):
         except Exception as exc:
             self.logger.error("Scraper raised an exception: %s", exc, exc_info=True)
 
-        self.logger.info("[%s] Collected %d events. Saving…", self.source_id, len(all_events))
+        self.logger.info(
+            "[%s] Collected %d events. Saving…", self.source_id, len(all_events)
+        )
 
         # ---- Phase 2: save (browser is closed here) ----
         created = 0
@@ -118,7 +120,7 @@ class BaseScraper(ABC):
                     same_day_events = Event.objects.filter(
                         date_start__date=event_data.date_start.date()
                     ).exclude(source=event_data.source)
-                    
+
                     for candidate in same_day_events:
                         similarity = difflib.SequenceMatcher(
                             None, event_data.title.lower(), candidate.title.lower()
@@ -129,14 +131,20 @@ class BaseScraper(ABC):
 
                 if cross_source_match:
                     # Merge with existing event from another source
-                    links = dict(cross_source_match.ticket_links) if cross_source_match.ticket_links else {}
+                    links = (
+                        dict(cross_source_match.ticket_links)
+                        if cross_source_match.ticket_links
+                        else {}
+                    )
                     links[event_data.source] = event_data.url
                     cross_source_match.ticket_links = links
                     cross_source_match.save(update_fields=["ticket_links"])
                     updated += 1
                     self.logger.info(
-                        "Merged %s with %s (similarity: %.2f)", 
-                        event_data.url, cross_source_match.url, similarity
+                        "Merged %s with %s (similarity: %.2f)",
+                        event_data.url,
+                        cross_source_match.url,
+                        similarity,
                     )
                     continue
 
@@ -144,7 +152,7 @@ class BaseScraper(ABC):
                 defaults["source"] = event_data.source
                 if event_data.external_id:
                     defaults["external_id"] = event_data.external_id
-                    
+
                 Event.objects.create(**defaults)
                 created += 1
 

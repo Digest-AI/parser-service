@@ -18,7 +18,9 @@ class I18nMiddleware(MiddlewareMixin):
         if not header_value:
             return default_language
 
-        supported_set = set[str](getattr(settings, "SUPPORTED_LANGUAGES", ["en", "ru", "ro"]))
+        supported_set = set[str](
+            getattr(settings, "SUPPORTED_LANGUAGES", ["en", "ru", "ro"])
+        )
         for item in header_value.split(","):
             lang = item.split(";")[0].strip().lower()
             if not lang:

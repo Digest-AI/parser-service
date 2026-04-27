@@ -4,51 +4,121 @@ from django.db import migrations, models
 
 
 class Migration(migrations.Migration):
-
     initial = True
 
-    dependencies = [
-    ]
+    dependencies = []
 
     operations = [
         migrations.CreateModel(
-            name='Event',
+            name="Event",
             fields=[
-                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
-                ('source', models.CharField(choices=[('afisha_md', 'Afisha.md'), ('iticket_md', 'iTicket.md'), ('mticket_md', 'mTicket.md'), ('fest_md', 'Fest.md')], db_index=True, max_length=32)),
-                ('external_id', models.CharField(blank=True, db_index=True, max_length=128)),
-                ('url', models.URLField(max_length=512, unique=True)),
-                ('title', models.CharField(max_length=512)),
-                ('title_ru', models.CharField(blank=True, max_length=512)),
-                ('title_ro', models.CharField(blank=True, max_length=512)),
-                ('description', models.TextField(blank=True)),
-                ('description_ru', models.TextField(blank=True)),
-                ('description_ro', models.TextField(blank=True)),
-                ('category', models.CharField(choices=[('concert', 'Концерт'), ('theatre', 'Театр'), ('movie', 'Кино'), ('sport', 'Спорт'), ('party', 'Вечеринка'), ('kids', 'Для детей'), ('training', 'Тренинг'), ('exhibition', 'Выставка'), ('festival', 'Фестиваль'), ('free', 'Бесплатно'), ('other', 'Другое')], db_index=True, default='other', max_length=32)),
-                ('raw_categories', models.JSONField(blank=True, default=list)),
-                ('date_start', models.DateTimeField(blank=True, db_index=True, null=True)),
-                ('date_end', models.DateTimeField(blank=True, null=True)),
-                ('date_raw', models.CharField(blank=True, max_length=256)),
-                ('venue_name', models.CharField(blank=True, max_length=256)),
-                ('venue_address', models.CharField(blank=True, max_length=512)),
-                ('city', models.CharField(db_index=True, default='Кишинёв', max_length=128)),
-                ('price_from', models.DecimalField(blank=True, decimal_places=2, max_digits=10, null=True)),
-                ('price_to', models.DecimalField(blank=True, decimal_places=2, max_digits=10, null=True)),
-                ('currency', models.CharField(default='MDL', max_length=8)),
-                ('is_free', models.BooleanField(db_index=True, default=False)),
-                ('image_url', models.URLField(blank=True, max_length=1024)),
-                ('raw_data', models.JSONField(blank=True, default=dict)),
-                ('is_active', models.BooleanField(db_index=True, default=True)),
-                ('created_at', models.DateTimeField(auto_now_add=True)),
-                ('updated_at', models.DateTimeField(auto_now=True)),
-                ('last_scraped_at', models.DateTimeField(blank=True, null=True)),
+                (
+                    "id",
+                    models.BigAutoField(
+                        auto_created=True,
+                        primary_key=True,
+                        serialize=False,
+                        verbose_name="ID",
+                    ),
+                ),
+                (
+                    "source",
+                    models.CharField(
+                        choices=[
+                            ("afisha_md", "Afisha.md"),
+                            ("iticket_md", "iTicket.md"),
+                            ("mticket_md", "mTicket.md"),
+                            ("fest_md", "Fest.md"),
+                        ],
+                        db_index=True,
+                        max_length=32,
+                    ),
+                ),
+                (
+                    "external_id",
+                    models.CharField(blank=True, db_index=True, max_length=128),
+                ),
+                ("url", models.URLField(max_length=512, unique=True)),
+                ("title", models.CharField(max_length=512)),
+                ("title_ru", models.CharField(blank=True, max_length=512)),
+                ("title_ro", models.CharField(blank=True, max_length=512)),
+                ("description", models.TextField(blank=True)),
+                ("description_ru", models.TextField(blank=True)),
+                ("description_ro", models.TextField(blank=True)),
+                (
+                    "category",
+                    models.CharField(
+                        choices=[
+                            ("concert", "Концерт"),
+                            ("theatre", "Театр"),
+                            ("movie", "Кино"),
+                            ("sport", "Спорт"),
+                            ("party", "Вечеринка"),
+                            ("kids", "Для детей"),
+                            ("training", "Тренинг"),
+                            ("exhibition", "Выставка"),
+                            ("festival", "Фестиваль"),
+                            ("free", "Бесплатно"),
+                            ("other", "Другое"),
+                        ],
+                        db_index=True,
+                        default="other",
+                        max_length=32,
+                    ),
+                ),
+                ("raw_categories", models.JSONField(blank=True, default=list)),
+                (
+                    "date_start",
+                    models.DateTimeField(blank=True, db_index=True, null=True),
+                ),
+                ("date_end", models.DateTimeField(blank=True, null=True)),
+                ("date_raw", models.CharField(blank=True, max_length=256)),
+                ("venue_name", models.CharField(blank=True, max_length=256)),
+                ("venue_address", models.CharField(blank=True, max_length=512)),
+                (
+                    "city",
+                    models.CharField(db_index=True, default="Кишинёв", max_length=128),
+                ),
+                (
+                    "price_from",
+                    models.DecimalField(
+                        blank=True, decimal_places=2, max_digits=10, null=True
+                    ),
+                ),
+                (
+                    "price_to",
+                    models.DecimalField(
+                        blank=True, decimal_places=2, max_digits=10, null=True
+                    ),
+                ),
+                ("currency", models.CharField(default="MDL", max_length=8)),
+                ("is_free", models.BooleanField(db_index=True, default=False)),
+                ("image_url", models.URLField(blank=True, max_length=1024)),
+                ("raw_data", models.JSONField(blank=True, default=dict)),
+                ("is_active", models.BooleanField(db_index=True, default=True)),
+                ("created_at", models.DateTimeField(auto_now_add=True)),
+                ("updated_at", models.DateTimeField(auto_now=True)),
+                ("last_scraped_at", models.DateTimeField(blank=True, null=True)),
             ],
             options={
-                'verbose_name': 'Event',
-                'verbose_name_plural': 'Events',
-                'db_table': 'events',
-                'ordering': ['-date_start'],
-                'indexes': [models.Index(fields=['source', 'external_id'], name='events_source_690504_idx'), models.Index(fields=['category', 'date_start'], name='events_categor_b43556_idx'), models.Index(fields=['is_active', 'date_start'], name='events_is_acti_2e08bb_idx')],
+                "verbose_name": "Event",
+                "verbose_name_plural": "Events",
+                "db_table": "events",
+                "ordering": ["-date_start"],
+                "indexes": [
+                    models.Index(
+                        fields=["source", "external_id"],
+                        name="events_source_690504_idx",
+                    ),
+                    models.Index(
+                        fields=["category", "date_start"],
+                        name="events_categor_b43556_idx",
+                    ),
+                    models.Index(
+                        fields=["is_active", "date_start"],
+                        name="events_is_acti_2e08bb_idx",
+                    ),
+                ],
             },
         ),
     ]

@@ -12,7 +12,10 @@ class APIException(DRFAPIException):
     """Base custom exception that supports attr parameter"""
 
     def __init__(
-        self, detail: Any | None = None, code: Any | None = None, attr: Any | None = None
+        self,
+        detail: Any | None = None,
+        code: Any | None = None,
+        attr: Any | None = None,
     ) -> None:
         super().__init__(detail=detail, code=code)
         self.attr = attr

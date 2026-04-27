@@ -60,7 +60,5 @@ class Command(BaseCommand):
             raise CommandError(f"Scraper failed: {exc}") from exc
 
         self.stdout.write(
-            self.style.SUCCESS(
-                f"Done. Created: {created}  |  Updated: {updated}"
-            )
+            self.style.SUCCESS(f"Done. Created: {created}  |  Updated: {updated}")
         )

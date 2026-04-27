@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from decimal import Decimal
 from typing import Any, Iterator
 
 from django.utils import timezone as tz
@@ -31,10 +30,11 @@ class CineplexMdScraper(BaseScraper):
 
     def __init__(
         self,
-        categories: list[str] | None = None, # Not used for Cineplex, but kept for interface compatibility
+        categories: list[str]
+        | None = None,  # Not used for Cineplex, but kept for interface compatibility
         language: str = "ro",
         headless: bool = True,
-        max_pages_per_category: int = 1, # Only one page
+        max_pages_per_category: int = 1,  # Only one page
         slow_mo: int = 0,
     ):
         super().__init__(language=language)
@@ -69,14 +69,14 @@ class CineplexMdScraper(BaseScraper):
             try:
                 page.goto(url, wait_until="networkidle", timeout=30_000)
                 page.wait_for_selector(".movies_fimls_item", timeout=15_000)
-                
+
                 # Scroll a bit to trigger lazy loading if any
                 page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
                 page.wait_for_timeout(2000)
-                
+
                 cards = self._extract_cards(page)
                 yield from cards
-                
+
                 self.logger.info("Found %d movies on Cineplex", len(cards))
 
             except Exception as exc:
@@ -139,7 +139,7 @@ class CineplexMdScraper(BaseScraper):
 
         results: list[EventData] = []
         seen_keys = set()
-        
+
         for item in raw:
             if not item.get("title") or not item.get("url"):
                 continue
@@ -150,7 +150,7 @@ class CineplexMdScraper(BaseScraper):
             if date_raw:
                 try:
                     dt = datetime.strptime(date_raw, "%d-%m-%Y")
-                    dt = tz.make_aware(dt) # Make it timezone aware
+                    dt = tz.make_aware(dt)  # Make it timezone aware
                     date_start = dt
                 except ValueError:
                     pass
