@@ -3,11 +3,14 @@ Django management command: scrape_iticket
 
 Usage
 -----
-# Scrape the default "all" category
+# Scrape the default "all" category (fast mode)
 python manage.py scrape_iticket
 
 # Scrape specific categories only
 python manage.py scrape_iticket --categories concert teatru
+
+# Deep mode — visit every event page for full description, address, date_end
+python manage.py scrape_iticket --deep
 
 # Limit pages per category
 python manage.py scrape_iticket --max-pages 2
@@ -59,16 +62,28 @@ class Command(BaseCommand):
             default=False,
             help="Run the browser in visible (non-headless) mode for debugging",
         )
+        parser.add_argument(
+            "--deep",
+            action="store_true",
+            default=False,
+            help=(
+                "Deep mode: visit each event's detail page to collect full description, "
+                "venue address, date_end, and organizer. Slower but collects maximum data."
+            ),
+        )
 
     def handle(self, *args, **options):
         categories = options["categories"]
         language = options["language"]
         max_pages = options["max_pages"]
         headless = not options["no_headless"]
+        deep = options["deep"]
 
+        mode_label = "DEEP (full details)" if deep else "FAST (cards only)"
         self.stdout.write(
             self.style.NOTICE(
                 f"Starting iticket.md scraper | "
+                f"mode={mode_label} | "
                 f"language={language} | "
                 f"categories={categories or 'all'} | "
                 f"max_pages={max_pages} | "
@@ -82,6 +97,7 @@ class Command(BaseCommand):
                 language=language,
                 headless=headless,
                 max_pages_per_category=max_pages,
+                deep=deep,
             )
             created, updated = scraper.run_and_save()
         except ImportError as exc:

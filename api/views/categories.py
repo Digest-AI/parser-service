@@ -6,8 +6,8 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from api.models import Event
-
+from api.models import Category
+from api.serializers.event import CategorySerializer
 
 @extend_schema(
     summary="List categories",
@@ -24,8 +24,10 @@ from api.models import Event
                     "items": {
                         "type": "object",
                         "properties": {
+                            "id": {"type": "integer"},
                             "slug": {"type": "string", "example": "concert"},
-                            "label": {"type": "string", "example": "Концерт"},
+                            "name_ru": {"type": "string", "example": "Концерт"},
+                            "name_ro": {"type": "string", "example": "Concert"},
                             "count": {"type": "integer", "example": 42},
                         },
                     },
@@ -38,25 +40,19 @@ class CategoryListView(APIView):
     """GET /categories/ — list of all categories with event counts."""
 
     def get(self, request: Request) -> Response:
-        # Count active events per category
-        counts: dict[str, int] = {
-            row["category"]: row["total"]
-            for row in (
-                Event.objects.filter(is_active=True)
-                .values("category")
-                .annotate(total=Count("id"))
-            )
-        }
-
-        label_map = dict(Event.Category.choices)
-
-        categories = [
+        categories = Category.objects.annotate(
+            count=Count('events', filter=Count('events__is_active'))
+        )
+        
+        data = [
             {
-                "slug": slug,
-                "label": label_map.get(slug, slug),
-                "count": counts.get(slug, 0),
+                "id": cat.id,
+                "slug": cat.slug,
+                "name_ru": cat.name_ru,
+                "name_ro": cat.name_ro,
+                "count": cat.count,
             }
-            for slug, _label in Event.Category.choices
+            for cat in categories
         ]
 
-        return Response({"categories": categories})
+        return Response({"categories": data})

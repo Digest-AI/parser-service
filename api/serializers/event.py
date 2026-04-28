@@ -1,63 +1,71 @@
 from rest_framework import serializers
 
-from api.models import Event
+from api.models import Event, Provider, Category
+
+
+class ProviderSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Provider
+        fields = ["id", "slug", "name", "url"]
+
+
+class CategorySerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Category
+        fields = ["id", "slug", "name_ru", "name_ro"]
 
 
 class EventSerializer(serializers.ModelSerializer):
+    provider = ProviderSerializer(read_only=True)
+    categories = CategorySerializer(many=True, read_only=True)
+
     class Meta:
         model = Event
         fields = [
             "id",
-            "source",
+            "slug",
+            "provider",
             "external_id",
             "url",
-            "title",
             "title_ru",
             "title_ro",
-            "description",
             "description_ru",
             "description_ro",
-            "category",
-            "raw_categories",
+            "categories",
             "date_start",
             "date_end",
-            "date_raw",
-            "venue_name",
-            "venue_address",
+            "address",
+            "place",
             "city",
             "price_from",
             "price_to",
-            "currency",
-            "is_free",
             "image_url",
-            "is_active",
+            "tickets_url",
             "created_at",
-            "updated_at",
-            "last_scraped_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+        read_only_fields = ["id", "created_at"]
 
 
 class EventListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for list endpoints."""
+    provider = ProviderSerializer(read_only=True)
+    categories = CategorySerializer(many=True, read_only=True)
 
     class Meta:
         model = Event
         fields = [
             "id",
-            "source",
+            "slug",
+            "provider",
             "url",
-            "title",
             "title_ru",
             "title_ro",
-            "category",
+            "categories",
             "date_start",
-            "date_raw",
-            "venue_name",
+            "address",
+            "place",
             "city",
             "price_from",
             "price_to",
-            "currency",
-            "is_free",
             "image_url",
         ]

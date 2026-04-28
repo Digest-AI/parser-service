@@ -19,36 +19,35 @@ class EventData:
     """Normalised event data returned by every scraper."""
 
     url: str
-    title: str
-    source: str
+    slug: str
+    provider_slug: str
+    provider_name: str
+    provider_url: str
 
     # Optional fields
     external_id: str = ""
     title_ru: str = ""
     title_ro: str = ""
-    description: str = ""
     description_ru: str = ""
     description_ro: str = ""
-    category: str = "other"
-    raw_categories: list[str] = field(default_factory=list)
+    categories: list[str] = field(default_factory=list) # Slugs of categories
     date_start: datetime | None = None
     date_end: datetime | None = None
-    date_raw: str = ""
-    venue_name: str = ""
-    venue_address: str = ""
+    place: str = ""
+    address: str = ""
     city: str = "Кишинёв"
     price_from: Decimal | None = None
     price_to: Decimal | None = None
-    currency: str = "MDL"
-    is_free: bool = False
     image_url: str = ""
-    raw_data: dict = field(default_factory=dict)
+    tickets_url: str = ""
 
 
 class BaseScraper(ABC):
     """Abstract base for all event scrapers."""
 
     source_id: str = ""  # override in subclass
+    source_name: str = ""
+    source_url: str = ""
 
     def __init__(self, language: str = "ru"):
         self.language = language
@@ -62,19 +61,9 @@ class BaseScraper(ABC):
     def run_and_save(self) -> tuple[int, int]:
         """
         Run the scraper and upsert events into the database.
-
-        Playwright runs inside an event loop. Django ORM calls cannot be made
-        from inside that same async/greenlet context. We therefore first collect
-        *all* EventData objects into a plain list (while the browser is open),
-        then close the browser, and only then write to the database.
-
-        Returns (created, updated) counts.
         """
-        from django.utils import timezone
+        from api.models import Event, Provider, Category
 
-        from api.models import Event
-
-        # ---- Phase 1: collect (browser is open here) ----
         all_events: list[EventData] = []
         try:
             for event_data in self.scrape():
@@ -86,75 +75,56 @@ class BaseScraper(ABC):
             "[%s] Collected %d events. Saving…", self.source_id, len(all_events)
         )
 
-        # ---- Phase 2: save (browser is closed here) ----
         created = 0
         updated = 0
-        now = timezone.now()
 
-        import difflib
+        # Ensure Provider exists
+        provider, _ = Provider.objects.get_or_create(
+            slug=self.source_id,
+            defaults={"name": self.source_name or self.source_id, "url": self.source_url}
+        )
 
         for event_data in all_events:
             try:
                 defaults = self._to_model_defaults(event_data)
-                defaults["last_scraped_at"] = now
+                
+                # Fetch/create Categories
+                cats = []
+                for cat_slug in event_data.categories:
+                    cat, _ = Category.objects.get_or_create(
+                        slug=cat_slug,
+                        defaults={
+                            "name_ru": cat_slug.capitalize(),
+                            "name_ro": cat_slug.capitalize()
+                        }
+                    )
+                    cats.append(cat)
 
-                # 1. Check if exact event already exists
+                # Find existing event
+                existing = None
                 if event_data.external_id:
                     existing = Event.objects.filter(
-                        source=event_data.source, external_id=event_data.external_id
+                        provider=provider, external_id=event_data.external_id
                     ).first()
                 else:
                     existing = Event.objects.filter(url=event_data.url).first()
 
                 if existing:
-                    # Update existing event
+                    # Update
                     for k, v in defaults.items():
                         setattr(existing, k, v)
                     existing.save()
+                    existing.categories.set(cats)
                     updated += 1
-                    continue
+                else:
+                    # Create
+                    defaults["provider"] = provider
+                    if event_data.external_id:
+                        defaults["external_id"] = event_data.external_id
 
-                # 2. Check for cross-source duplicates (fuzzy match by date and title)
-                cross_source_match = None
-                if getattr(self, "cross_source_dedup", True) and event_data.date_start:
-                    same_day_events = Event.objects.filter(
-                        date_start__date=event_data.date_start.date()
-                    ).exclude(source=event_data.source)
-
-                    for candidate in same_day_events:
-                        similarity = difflib.SequenceMatcher(
-                            None, event_data.title.lower(), candidate.title.lower()
-                        ).ratio()
-                        if similarity > 0.7:
-                            cross_source_match = candidate
-                            break
-
-                if cross_source_match:
-                    # Merge with existing event from another source
-                    links = (
-                        dict(cross_source_match.ticket_links)
-                        if cross_source_match.ticket_links
-                        else {}
-                    )
-                    links[event_data.source] = event_data.url
-                    cross_source_match.ticket_links = links
-                    cross_source_match.save(update_fields=["ticket_links"])
-                    updated += 1
-                    self.logger.info(
-                        "Merged %s with %s (similarity: %.2f)",
-                        event_data.url,
-                        cross_source_match.url,
-                        similarity,
-                    )
-                    continue
-
-                # 3. No match found, create new event
-                defaults["source"] = event_data.source
-                if event_data.external_id:
-                    defaults["external_id"] = event_data.external_id
-
-                Event.objects.create(**defaults)
-                created += 1
+                    new_event = Event.objects.create(**defaults)
+                    new_event.categories.set(cats)
+                    created += 1
 
             except Exception as exc:
                 self.logger.error(
@@ -166,33 +136,21 @@ class BaseScraper(ABC):
         )
         return created, updated
 
-    # ------------------------------------------------------------------
-    # helpers
-    # ------------------------------------------------------------------
-
     def _to_model_defaults(self, data: EventData) -> dict:
         return {
+            "slug": data.slug,
             "url": data.url,
-            "source": data.source,
-            "external_id": data.external_id,
-            "title": data.title,
             "title_ru": data.title_ru,
             "title_ro": data.title_ro,
-            "description": data.description,
             "description_ru": data.description_ru,
             "description_ro": data.description_ro,
-            "category": data.category,
-            "raw_categories": data.raw_categories,
             "date_start": data.date_start,
             "date_end": data.date_end,
-            "date_raw": data.date_raw,
-            "venue_name": data.venue_name,
-            "venue_address": data.venue_address,
+            "place": data.place,
+            "address": data.address,
             "city": data.city,
             "price_from": data.price_from,
             "price_to": data.price_to,
-            "currency": data.currency,
-            "is_free": data.is_free,
             "image_url": data.image_url,
-            "raw_data": data.raw_data,
+            "tickets_url": data.tickets_url,
         }

@@ -67,6 +67,8 @@ class ITicketMdScraper(BaseScraper):
     """
 
     source_id = "iticket_md"
+    source_name = "iTicket.md"
+    source_url = "https://iticket.md"
 
     def __init__(
         self,
@@ -75,6 +77,7 @@ class ITicketMdScraper(BaseScraper):
         headless: bool = True,
         max_pages_per_category: int = 5,
         slow_mo: int = 0,
+        deep: bool = False,
     ):
         super().__init__(language=language)
         # Default to "all" to scrape everything in one go unless specified
@@ -82,6 +85,7 @@ class ITicketMdScraper(BaseScraper):
         self.headless = headless
         self.max_pages_per_category = max_pages_per_category
         self.slow_mo = slow_mo
+        self.deep = deep
 
     def scrape(self) -> Iterator[EventData]:
         """Yield EventData objects for all events across all categories."""
@@ -144,6 +148,8 @@ class ITicketMdScraper(BaseScraper):
             for card in new_cards:
                 if card.external_id:
                     seen_ids.add(card.external_id)
+                if self.deep:
+                    card = self._enrich_with_details(page, card)
                 yield card
 
             self.logger.info(
@@ -213,6 +219,8 @@ class ITicketMdScraper(BaseScraper):
             self.logger.error("JS card extraction failed on %s: %s", category, exc)
             return []
 
+        from django.utils.text import slugify
+
         results: list[EventData] = []
         for item in raw:
             if not item.get("title") or not item.get("url"):
@@ -222,31 +230,132 @@ class ITicketMdScraper(BaseScraper):
                 item.get("priceLow", ""), item.get("priceHigh", "")
             )
             date_start = self._parse_date(item.get("startDate", ""))
+            
+            ext_id = item.get("externalId", "")
+            slug = slugify(f"iticket-{ext_id}-{item['title']}")
 
             results.append(
                 EventData(
                     url=item["url"],
-                    title=item["title"],
+                    slug=slug,
+                    provider_slug="iticket_md",
+                    provider_name="iTicket.md",
+                    provider_url="https://iticket.md",
                     title_ro=item["title"] if self.language == "ro" else "",
                     title_ru=item["title"] if self.language == "ru" else "",
-                    source=self.source_id,
-                    external_id=item.get("externalId", ""),
-                    category=CATEGORY_MAP.get(category, "other"),
-                    raw_categories=[item.get("rawCategory", category)],
+                    external_id=ext_id,
+                    categories=[CATEGORY_MAP.get(category, "other")],
                     date_start=date_start,
-                    venue_name=item.get("venueName", ""),
-                    venue_address=item.get("venueAddress", ""),
+                    place=item.get("venueName", ""),
+                    address=item.get("venueAddress", ""),
                     city="Chișinău",  # iTicket doesn't clearly split city, assuming Chisinau for now
                     price_from=price_from,
                     price_to=price_to,
-                    currency=item.get("currency", "MDL"),
-                    is_free=is_free,
                     image_url=item.get("imageUrl", ""),
-                    raw_data=item,
+                    tickets_url=item["url"],
                 )
             )
 
         return results
+
+    # ------------------------------------------------------------------
+    # Deep scraping: visit each event page
+    # ------------------------------------------------------------------
+
+    def _enrich_with_details(self, page: Any, event: EventData) -> EventData:
+        """
+        Visit the individual event page and enrich *event* with:
+        - Full description (RO or RU depending on language)
+        - Venue address (full, not just name)
+        - date_end
+        - og:image fallback
+        """
+        if not self._navigate(page, event.url):
+            return event
+
+        try:
+            page.wait_for_selector(
+                ".event-page, .event-detail, [itemprop='description'], main",
+                timeout=8_000,
+            )
+        except Exception:
+            self.logger.debug("Detail page selector not found for %s", event.url)
+
+        try:
+            details: dict = page.evaluate("""
+                () => {
+                    // --- Description (prefer schema.org, fallback to visible text) ---
+                    let description = '';
+                    const schemDesc = document.querySelector('[itemprop="description"]');
+                    if (schemDesc) {
+                        description = schemDesc.getAttribute('content') ||
+                                      schemDesc.textContent.trim();
+                    }
+                    if (!description) {
+                        const candidates = [
+                            '.event-description', '.description',
+                            '.event-content', '.event-text',
+                            'article p',
+                        ];
+                        for (const sel of candidates) {
+                            const el = document.querySelector(sel);
+                            if (el && el.textContent.trim().length > 20) {
+                                description = el.textContent.trim();
+                                break;
+                            }
+                        }
+                    }
+
+                    // --- Full venue address ---
+                    let venueAddress = '';
+                    const addrEl = document.querySelector(
+                        '[itemprop="address"], .venue-address, .event-address, .location-address'
+                    );
+                    if (addrEl) {
+                        venueAddress = addrEl.getAttribute('content') ||
+                                       addrEl.textContent.trim();
+                    }
+
+                    // --- Date end ---
+                    let dateEndRaw = '';
+                    const endEl = document.querySelector('[itemprop="endDate"]');
+                    if (endEl) {
+                        dateEndRaw = endEl.getAttribute('content') || endEl.textContent.trim();
+                    }
+
+                    // --- OG image fallback ---
+                    let imageUrl = '';
+                    const ogImg = document.querySelector('meta[property="og:image"]');
+                    if (ogImg) imageUrl = ogImg.getAttribute('content') || '';
+
+                    return { description, venueAddress, dateEndRaw, imageUrl };
+                }
+            """)
+        except Exception as exc:
+            self.logger.warning("Detail extraction failed for %s: %s", event.url, exc)
+            return event
+
+        if details.get("description"):
+            if self.language == "ro":
+                event.description_ro = details["description"]
+            else:
+                event.description_ru = details["description"]
+
+        if details.get("venueAddress") and not event.address:
+            event.address = details["venueAddress"]
+
+        if details.get("imageUrl") and not event.image_url:
+            event.image_url = details["imageUrl"]
+
+        if details.get("dateEndRaw"):
+            date_end = self._parse_date(details["dateEndRaw"])
+            if date_end:
+                event.date_end = date_end
+
+        self.logger.debug("Enriched: %s", event.url)
+        return event
+
+    # ------------------------------------------------------------------
 
     def _navigate(self, page: Any, url: str) -> bool:
         """Navigate to *url*, returning True on success."""
