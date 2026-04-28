@@ -26,6 +26,8 @@ class CineplexMdScraper(BaseScraper):
     """
 
     source_id = "cineplex_md"
+    source_name = "Cineplex"
+    source_url = "https://cineplex.md"
     cross_source_dedup = False  # Do not merge with Afisha/iTicket
 
     def __init__(
@@ -137,6 +139,8 @@ class CineplexMdScraper(BaseScraper):
             self.logger.error("JS card extraction failed: %s", exc)
             return []
 
+        from django.utils.text import slugify
+
         results: list[EventData] = []
         seen_keys = set()
 
@@ -161,22 +165,25 @@ class CineplexMdScraper(BaseScraper):
                 continue
             seen_keys.add(dedup_key)
 
+            ext_id = item.get("externalId", "")
+            slug = slugify(f"cineplex-{ext_id}-{item['title']}")
+
             results.append(
                 EventData(
                     url=item["url"],
-                    title=item["title"],
+                    slug=slug,
+                    provider_slug="cineplex_md",
+                    provider_name="Cineplex",
+                    provider_url="https://cineplex.md",
                     title_ro=item["title"] if self.language == "ro" else "",
                     title_ru=item["title"] if self.language == "ru" else "",
-                    source=self.source_id,
-                    external_id=item.get("externalId", ""),
-                    category="movie",
-                    raw_categories=[item.get("rawCategory", "movie")],
+                    external_id=ext_id,
+                    categories=["movie"],
                     date_start=date_start,
-                    venue_name="Cineplex",
+                    place="Cineplex",
                     city="Chișinău",
-                    currency="MDL",
                     image_url=item.get("imageUrl", ""),
-                    raw_data=item,
+                    tickets_url=item["url"],
                 )
             )
 

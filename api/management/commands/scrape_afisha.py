@@ -3,11 +3,14 @@ Django management command: scrape_afisha
 
 Usage
 -----
-# Scrape all categories
+# Scrape all categories (fast mode)
 python manage.py scrape_afisha
 
 # Scrape specific categories only
 python manage.py scrape_afisha --categories concerte teatru
+
+# Deep mode — visit every event page for full description, address, date_end
+python manage.py scrape_afisha --deep
 
 # Run in non-headless mode (visible browser, useful for debugging)
 python manage.py scrape_afisha --no-headless
@@ -62,16 +65,28 @@ class Command(BaseCommand):
             default=False,
             help="Run the browser in visible (non-headless) mode for debugging",
         )
+        parser.add_argument(
+            "--deep",
+            action="store_true",
+            default=False,
+            help=(
+                "Deep mode: visit each event's detail page to collect full description, "
+                "venue address, date_end, and ticket links. Slower but collects maximum data."
+            ),
+        )
 
     def handle(self, *args, **options):
         categories = options["categories"]
         language = options["language"]
         max_pages = options["max_pages"]
         headless = not options["no_headless"]
+        deep = options["deep"]
 
+        mode_label = "DEEP (full details)" if deep else "FAST (cards only)"
         self.stdout.write(
             self.style.NOTICE(
                 f"Starting afisha.md scraper | "
+                f"mode={mode_label} | "
                 f"language={language} | "
                 f"categories={categories or 'ALL'} | "
                 f"max_pages={max_pages} | "
@@ -85,6 +100,7 @@ class Command(BaseCommand):
                 language=language,
                 headless=headless,
                 max_pages_per_category=max_pages,
+                deep=deep,
             )
             created, updated = scraper.run_and_save()
         except ImportError as exc:

@@ -28,19 +28,16 @@ class EventPagination(PageNumberPagination):
         parameters=[
             OpenApiParameter(
                 "category",
-                description="Filter by category slug",
-                enum=[c[0] for c in Event.Category.choices],
+                description="Filter by category slug (can specify multiple separated by commas or repeating the parameter)",
             ),
             OpenApiParameter(
-                "source",
-                description="Filter by source slug",
-                enum=[s[0] for s in Event.Source.choices],
+                "provider",
+                description="Filter by provider slug",
             ),
             OpenApiParameter("city", description="Filter by city (partial match)"),
             OpenApiParameter(
-                "venue", description="Filter by venue name (partial match)"
+                "place", description="Filter by place name (partial match)"
             ),
-            OpenApiParameter("is_free", description="Filter free events (true/false)"),
             OpenApiParameter(
                 "date_from", description="Filter events starting from date (YYYY-MM-DD)"
             ),
@@ -50,7 +47,7 @@ class EventPagination(PageNumberPagination):
             OpenApiParameter("price_min", description="Minimum ticket price (MDL)"),
             OpenApiParameter("price_max", description="Maximum ticket price (MDL)"),
             OpenApiParameter(
-                "q", description="Full-text search in title, description and venue"
+                "q", description="Full-text search in title, description and place"
             ),
         ],
     ),
@@ -60,13 +57,13 @@ class EventViewSet(ReadOnlyModelViewSet):
     """
     Read-only API for querying scraped Moldova events.
 
-    Supports filtering by category, source, city, date range and free status.
+    Supports filtering by category, provider, city, date range.
     """
 
-    queryset = Event.objects.filter(is_active=True).order_by("-date_start")
+    queryset = Event.objects.filter(is_active=True).select_related("provider").prefetch_related("categories").order_by("-date_start")
     pagination_class = EventPagination
     filter_backends = [filters.SearchFilter, filters.OrderingFilter]
-    search_fields = ["title", "title_ru", "title_ro", "description", "venue_name"]
+    search_fields = ["title_ru", "title_ro", "description_ru", "description_ro", "place"]
     ordering_fields = ["date_start", "price_from", "created_at"]
     ordering = ["-date_start"]
 
@@ -80,29 +77,33 @@ class EventViewSet(ReadOnlyModelViewSet):
         params = self.request.query_params
 
         # Category filter
-        category = self.kwargs.get("category_slug") or params.get("category")
-        if category:
-            qs = qs.filter(category=category)
+        raw_categories = params.getlist("category")
+        category_slug = self.kwargs.get("category_slug")
+        
+        categories = []
+        for cat in raw_categories:
+            categories.extend([c.strip() for c in cat.split(",") if c.strip()])
+            
+        if category_slug and category_slug not in categories:
+            categories.append(category_slug)
+            
+        if categories:
+            qs = qs.filter(categories__slug__in=categories).distinct()
 
-        # Source filter
-        source = params.get("source")
-        if source:
-            qs = qs.filter(source=source)
+        # Provider filter
+        provider = params.get("provider") or params.get("source") # support legacy 'source'
+        if provider:
+            qs = qs.filter(provider__slug=provider)
 
         # City filter
         city = self.kwargs.get("city_name") or params.get("city")
         if city:
             qs = qs.filter(city__icontains=city)
 
-        # Venue filter
-        venue = params.get("venue")
-        if venue:
-            qs = qs.filter(venue_name__icontains=venue)
-
-        # Free filter
-        is_free = params.get("is_free")
-        if is_free is not None:
-            qs = qs.filter(is_free=is_free.lower() in ("true", "1", "yes"))
+        # Place filter
+        place = params.get("place") or params.get("venue")
+        if place:
+            qs = qs.filter(place__icontains=place)
 
         # Date range filter
         date_from = params.get("date_from")
@@ -134,14 +135,12 @@ class EventViewSet(ReadOnlyModelViewSet):
             from django.db.models import Q
 
             qs = qs.filter(
-                Q(title__icontains=q)
-                | Q(title_ru__icontains=q)
+                Q(title_ru__icontains=q)
                 | Q(title_ro__icontains=q)
-                | Q(description__icontains=q)
                 | Q(description_ru__icontains=q)
                 | Q(description_ro__icontains=q)
-                | Q(venue_name__icontains=q)
-            )
+                | Q(place__icontains=q)
+            ).distinct()
 
         return qs
 
@@ -159,6 +158,13 @@ class EventViewSet(ReadOnlyModelViewSet):
             OpenApiParameter(
                 "category", description="Category slug to scrape (default: all)"
             ),
+            OpenApiParameter(
+                "deep",
+                description=(
+                    "Set to 'true' for deep mode: visits each event page for full description, "
+                    "venue address and date_end. Much slower but collects maximum data."
+                ),
+            ),
         ],
         responses={
             200: {
@@ -175,6 +181,7 @@ class EventViewSet(ReadOnlyModelViewSet):
         """POST /events/scrape/ — trigger a synchronous scrape (dev only)."""
         source = request.query_params.get("source", "afisha_md")
         category = request.query_params.get("category")
+        deep = request.query_params.get("deep", "").lower() in ("true", "1", "yes")
 
         try:
             if source == "cineplex_md":
@@ -188,7 +195,7 @@ class EventViewSet(ReadOnlyModelViewSet):
                     [category] if category and category in ALL_CATEGORIES else ["all"]
                 )
                 scraper = ITicketMdScraper(
-                    categories=categories, max_pages_per_category=1
+                    categories=categories, max_pages_per_category=1, deep=deep
                 )
             else:
                 from api.scrapers.afisha_md import ALL_CATEGORIES, AfishaMdScraper
@@ -197,7 +204,7 @@ class EventViewSet(ReadOnlyModelViewSet):
                     [category] if category and category in ALL_CATEGORIES else None
                 )
                 scraper = AfishaMdScraper(
-                    categories=categories, max_pages_per_category=1
+                    categories=categories, max_pages_per_category=1, deep=deep
                 )
 
             created, updated = scraper.run_and_save()
@@ -298,6 +305,90 @@ class EventViewSet(ReadOnlyModelViewSet):
             target = timezone.localdate()
 
         qs = self.get_queryset().filter(date_start__date=target).order_by("date_start")
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = EventListSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = EventListSerializer(qs, many=True)
+        return Response(serializer.data)
+
+    @extend_schema(
+        summary="Get events for the next 7 days",
+        description="Returns active events scheduled within the next 7 days (including today).",
+    )
+    @action(detail=False, methods=["get"], url_path="next-7-days")
+    def next_7_days(self, request: Request) -> Response:
+        """GET /events/next-7-days/ — events for the next 7 days."""
+        today = timezone.localdate()
+        end_date = today + datetime.timedelta(days=7)
+        qs = (
+            self.get_queryset()
+            .filter(date_start__date__gte=today, date_start__date__lte=end_date)
+            .order_by("date_start")
+        )
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = EventListSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = EventListSerializer(qs, many=True)
+        return Response(serializer.data)
+
+    @extend_schema(
+        summary="Get events for the next 14 days",
+        description="Returns active events scheduled within the next 14 days (including today).",
+    )
+    @action(detail=False, methods=["get"], url_path="next-14-days")
+    def next_14_days(self, request: Request) -> Response:
+        """GET /events/next-14-days/ — events for the next 14 days."""
+        today = timezone.localdate()
+        end_date = today + datetime.timedelta(days=14)
+        qs = (
+            self.get_queryset()
+            .filter(date_start__date__gte=today, date_start__date__lte=end_date)
+            .order_by("date_start")
+        )
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = EventListSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = EventListSerializer(qs, many=True)
+        return Response(serializer.data)
+
+    @extend_schema(
+        summary="Get events for the next month",
+        description="Returns active events scheduled within the next 30 days (including today).",
+    )
+    @action(detail=False, methods=["get"], url_path="next-month")
+    def next_month(self, request: Request) -> Response:
+        """GET /events/next-month/ — events for the next 30 days."""
+        today = timezone.localdate()
+        end_date = today + datetime.timedelta(days=30)
+        qs = (
+            self.get_queryset()
+            .filter(date_start__date__gte=today, date_start__date__lte=end_date)
+            .order_by("date_start")
+        )
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = EventListSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = EventListSerializer(qs, many=True)
+        return Response(serializer.data)
+
+    @extend_schema(
+        summary="Get events for the next 3 months",
+        description="Returns active events scheduled within the next 90 days (including today).",
+    )
+    @action(detail=False, methods=["get"], url_path="next-3-months")
+    def next_3_months(self, request: Request) -> Response:
+        """GET /events/next-3-months/ — events for the next 90 days."""
+        today = timezone.localdate()
+        end_date = today + datetime.timedelta(days=90)
+        qs = (
+            self.get_queryset()
+            .filter(date_start__date__gte=today, date_start__date__lte=end_date)
+            .order_by("date_start")
+        )
         page = self.paginate_queryset(qs)
         if page is not None:
             serializer = EventListSerializer(page, many=True)

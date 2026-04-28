@@ -140,6 +140,8 @@ class AfishaMdScraper(BaseScraper):
     """
 
     source_id = "afisha_md"
+    source_name = "Afisha.md"
+    source_url = "https://afisha.md"
 
     def __init__(
         self,
@@ -148,12 +150,14 @@ class AfishaMdScraper(BaseScraper):
         headless: bool = True,
         max_pages_per_category: int = 3,
         slow_mo: int = 0,
+        deep: bool = False,
     ):
         super().__init__(language=language)
         self.categories = categories or ALL_CATEGORIES
         self.headless = headless
         self.max_pages_per_category = max_pages_per_category
         self.slow_mo = slow_mo
+        self.deep = deep
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -202,7 +206,7 @@ class AfishaMdScraper(BaseScraper):
     ) -> Iterator[EventData]:
         """Load listing pages for *category* and yield EventData from cards."""
         base_url = f"{BASE_URL}/{self.language}/events/{category}"
-        self.logger.info("Scraping category: %s", base_url)
+        self.logger.info("Scraping category: %s (deep=%s)", base_url, self.deep)
 
         for page_num in range(1, self.max_pages_per_category + 1):
             url = base_url if page_num == 1 else f"{base_url}?page={page_num}"
@@ -225,6 +229,8 @@ class AfishaMdScraper(BaseScraper):
 
             for card in new_cards:
                 seen_urls.add(card.url)
+                if self.deep:
+                    card = self._enrich_with_details(page, card)
                 yield card
 
             self.logger.info(
@@ -302,37 +308,159 @@ class AfishaMdScraper(BaseScraper):
             self.logger.error("JS card extraction failed on %s: %s", category, exc)
             return []
 
+        from django.utils.text import slugify
+
         results: list[EventData] = []
         for item in raw:
             if not item.get("title") or not item.get("url"):
                 continue
             price_from, price_to, is_free = self._parse_price(item.get("priceRaw", ""))
             date_start = self._parse_date_ru(item.get("dateRaw", ""))
+            
+            ext_id = item.get("externalId", "")
+            slug = slugify(f"afisha-{ext_id}-{item['title']}")
 
             results.append(
                 EventData(
                     url=item["url"],
-                    title=item["title"],
+                    slug=slug,
+                    provider_slug="afisha_md",
+                    provider_name="Afisha.md",
+                    provider_url="https://afisha.md",
                     title_ru=item["title"] if self.language == "ru" else "",
                     title_ro=item["title"] if self.language == "ro" else "",
-                    source="afisha_md",
-                    external_id=item.get("externalId", ""),
-                    category=CATEGORY_MAP.get(category, "other"),
-                    raw_categories=[category],
+                    external_id=ext_id,
+                    categories=[CATEGORY_MAP.get(category, "other")],
                     date_start=date_start,
-                    date_raw=item.get("dateRaw", ""),
-                    venue_name=item.get("venue", ""),
+                    place=item.get("venue", ""),
                     city="Кишинёв",
                     price_from=price_from,
                     price_to=price_to,
-                    currency="MDL",
-                    is_free=is_free,
                     image_url=item.get("imageUrl", ""),
-                    raw_data=item,
                 )
             )
 
         return results
+
+    # ------------------------------------------------------------------
+    # Deep scraping: visit each event page
+    # ------------------------------------------------------------------
+
+    def _enrich_with_details(self, page: Any, event: EventData) -> EventData:
+        """
+        Visit the individual event page and enrich *event* with:
+        - Full description (RU or RO depending on language)
+        - Venue address
+        - date_end (if present)
+        - Extra image (first in gallery if no image yet)
+        """
+        if not self._navigate(page, event.url):
+            return event
+
+        try:
+            page.wait_for_selector(
+                "[class*='eventPage'], [class*='event-page'], [class*='eventContent'], main",
+                timeout=8_000,
+            )
+        except Exception:
+            self.logger.debug("Detail page selector not found for %s", event.url)
+
+        try:
+            details: dict = page.evaluate("""
+                () => {
+                    // --- Description ---
+                    const descSelectors = [
+                        '[class*="eventDescription"]',
+                        '[class*="event-description"]',
+                        '[class*="description"]',
+                        '[class*="eventText"]',
+                        '[class*="event-text"]',
+                        '[itemprop="description"]',
+                        'article p',
+                    ];
+                    let description = '';
+                    for (const sel of descSelectors) {
+                        const el = document.querySelector(sel);
+                        if (el && el.textContent.trim().length > 20) {
+                            description = el.textContent.trim();
+                            break;
+                        }
+                    }
+
+                    // --- Venue address ---
+                    const addrSelectors = [
+                        '[class*="eventAddress"]',
+                        '[class*="event-address"]',
+                        '[class*="address"]',
+                        '[itemprop="address"]',
+                        '[class*="location"]',
+                    ];
+                    let venueAddress = '';
+                    for (const sel of addrSelectors) {
+                        const el = document.querySelector(sel);
+                        if (el && el.textContent.trim()) {
+                            venueAddress = el.textContent.trim();
+                            break;
+                        }
+                    }
+
+                    // --- Date end ---
+                    let dateEndRaw = '';
+                    const endDateEl = document.querySelector(
+                        '[itemprop="endDate"], [class*="dateEnd"], [class*="date-end"]'
+                    );
+                    if (endDateEl) {
+                        dateEndRaw = endDateEl.getAttribute('content') ||
+                                     endDateEl.textContent.trim();
+                    }
+
+                    // --- Image (fallback if card had none) ---
+                    let imageUrl = '';
+                    const ogImage = document.querySelector('meta[property="og:image"]');
+                    if (ogImage) imageUrl = ogImage.getAttribute('content') || '';
+
+                    // --- Ticket links ---
+                    const ticketLinks = {};
+                    document.querySelectorAll('a[href*="iticket"], a[href*="ticket"]').forEach(a => {
+                        const href = a.href;
+                        if (href && !href.includes('afisha.md')) {
+                            const key = new URL(href).hostname.replace('www.', '');
+                            ticketLinks[key] = href;
+                        }
+                    });
+
+                    return { description, venueAddress, dateEndRaw, imageUrl, ticketLinks };
+                }
+            """)
+        except Exception as exc:
+            self.logger.warning("Detail extraction failed for %s: %s", event.url, exc)
+            return event
+
+        if details.get("description"):
+            if self.language == "ru":
+                event.description_ru = details["description"]
+            else:
+                event.description_ro = details["description"]
+
+        if details.get("venueAddress") and not event.address:
+            event.address = details["venueAddress"]
+
+        if details.get("imageUrl") and not event.image_url:
+            event.image_url = details["imageUrl"]
+
+        if details.get("ticketLinks"):
+            # Just grab the first URL for tickets_url
+            for _k, link_url in details["ticketLinks"].items():
+                event.tickets_url = link_url
+                break
+
+        if details.get("dateEndRaw"):
+            date_end = self._parse_date_ru(details["dateEndRaw"])
+            if date_end:
+                event.date_end = date_end
+
+        self.logger.debug("Enriched: %s", event.url)
+        return event
 
     # ------------------------------------------------------------------
     # Navigation helper
