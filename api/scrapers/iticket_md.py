@@ -11,6 +11,7 @@ Pagination is handled via `?page=X`.
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterator
@@ -152,16 +153,18 @@ class ITicketMdScraper(BaseScraper):
                 if self.deep:
                     card = self._enrich_with_details(page, card)
                 
-                # Validation: Skip if no title or description (in any language)
+                # Validation: Always require at least one title
                 has_title = bool(card.title_ro or card.title_ru)
-                has_description = bool(card.description_ro or card.description_ru)
-                
-                if not has_title or not has_description:
-                    self.logger.warning(
-                        "Skipping event %s: missing title or description", 
-                        card.url
-                    )
+                if not has_title:
                     continue
+
+                # In deep mode, we require descriptions on BOTH languages 
+                # (or at least one if the other is truly missing on the site)
+                if self.deep:
+                    has_desc = bool(card.description_ro or card.description_ru)
+                    if not has_desc:
+                        self.logger.warning("Skipping event %s: no description found in deep mode", card.url)
+                        continue
                     
                 yield card
 
@@ -406,7 +409,6 @@ class ITicketMdScraper(BaseScraper):
                             if (text.length > 50) result.description = text.trim();
                         }
                     }
-                    }
 
                     // --- Venue address fallback ---
                     if (!result.venueAddress) {
@@ -484,7 +486,6 @@ class ITicketMdScraper(BaseScraper):
             pass
             
         # 2. DD.MM.YYYY or DD.MM
-        import re
         m = re.search(r"(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?", raw)
         if m:
             day = int(m.group(1))

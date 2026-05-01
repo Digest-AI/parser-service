@@ -48,6 +48,7 @@ class BaseScraper(ABC):
     source_id: str = ""  # override in subclass
     source_name: str = ""
     source_url: str = ""
+    cross_source_dedup: bool = True  # merge events by title/date across providers
 
     def __init__(self, language: str = "ru"):
         self.language = language
@@ -62,6 +63,7 @@ class BaseScraper(ABC):
         """
         Run the scraper and upsert events into the database.
         """
+        from django.db.models import Q
         from api.models import Event, Provider, Category
 
         all_events: list[EventData] = []
@@ -106,17 +108,39 @@ class BaseScraper(ABC):
                     existing = Event.objects.filter(
                         provider=provider, external_id=event_data.external_id
                     ).first()
-                else:
+                
+                if not existing:
                     existing = Event.objects.filter(url=event_data.url).first()
+
+                # Cross-source deduplication: match by normalized title and date
+                if not existing and self.cross_source_dedup and event_data.date_start:
+                    # Try matching by title_ru or title_ro
+                    for title in [event_data.title_ru, event_data.title_ro]:
+                        if not title:
+                            continue
+                        
+                        # Find any event from ANY provider with same title and date
+                        # We use __iexact for case-insensitivity
+                        existing = Event.objects.filter(
+                            Q(title_ru__iexact=title) | Q(title_ro__iexact=title),
+                            date_start=event_data.date_start
+                        ).first()
+                        
+                        if existing:
+                            self.logger.info(
+                                "Cross-source match found: '%s' matches existing event '%s'",
+                                title, existing.title_ru or existing.title_ro
+                            )
+                            break
 
                 if existing:
                     # Update (merge non-empty fields)
                     changed = False
                     for k, v in defaults.items():
                         current_val = getattr(existing, k)
-                        # Only update if the new value is non-empty, 
-                        # or if the current value is empty/None
-                        if v and v != current_val:
+                        # Only update if the new value is not None/empty, 
+                        # and it differs from the current value.
+                        if v is not None and v != "" and v != current_val:
                             setattr(existing, k, v)
                             changed = True
                     

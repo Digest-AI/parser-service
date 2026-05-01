@@ -232,19 +232,18 @@ class AfishaMdScraper(BaseScraper):
                 if self.deep:
                     card = self._enrich_with_details(page, card)
                 
-                # Validation: Skip if no title or (if deep) no description
+                # Validation: Always require at least one title
                 has_title = bool(card.title_ro or card.title_ru)
-                # If we are in deep mode, we EXPECT descriptions. 
-                # If not in deep mode, we allow empty descriptions for now 
-                # unless the user explicitly wants them for all events.
-                has_description = bool(card.description_ro or card.description_ru) or not self.deep
-                
-                if not has_title or (self.deep and not has_description):
-                    self.logger.warning(
-                        "Skipping event %s: missing title or description", 
-                        card.url
-                    )
+                if not has_title:
                     continue
+
+                # In deep mode, we require descriptions on BOTH languages 
+                # (or at least one if the other is truly missing on the site)
+                if self.deep:
+                    has_desc = bool(card.description_ro or card.description_ru)
+                    if not has_desc:
+                        self.logger.warning("Skipping event %s: no description found in deep mode", card.url)
+                        continue
                 yield card
 
             self.logger.info(
@@ -678,27 +677,42 @@ class AfishaMdScraper(BaseScraper):
             "500 MDL"        → (500, None, False)
             "от 100 MDL"     → (100, None, False)
             "от 100 до 500"  → (100, 500, False)
+            "1 200 MDL"      → (1200, None, False)
             "Бесплатно"      → (0,   None, True)
         """
         if not raw:
             return None, None, False
 
-        lower = raw.lower()
-        if any(w in lower for w in ("бесплатно", "free", "gratuit", "0 mdl")):
-            return Decimal("0"), None, True
+        lower = raw.lower().strip()
+        
+        # 1. Check for free entries using strict word boundaries
+        free_patterns = [r'\bбесплатно\b', r'\bfree\b', r'\bgratuit\b', r'\b0\s*mdl\b']
+        for p in free_patterns:
+            if re.search(p, lower):
+                return Decimal("0"), None, True
 
-        numbers = re.findall(r"[\d\s]+(?:[.,]\d+)?", raw)
+        # 2. Extract all numbers, handling thousand separators (space or \u202f)
+        # This regex matches: 500, 1 200, 100.50, 100,50
+        num_pattern = r"(\d+(?:[\s\u202f]\d{3})*(?:[.,]\d+)?)"
+        numbers = re.findall(num_pattern, raw)
+        
         decimals: list[Decimal] = []
         for n in numbers:
+            # Normalize number format for Decimal
+            cleaned = n.replace("\u202f", "").replace(" ", "").replace(",", ".").strip()
+            if not cleaned:
+                continue
             try:
-                decimals.append(
-                    Decimal(n.replace("\u202f", "").replace(" ", "").replace(",", "."))
-                )
+                decimals.append(Decimal(cleaned))
             except InvalidOperation:
                 pass
 
         if not decimals:
             return None, None, False
+            
         if len(decimals) == 1:
             return decimals[0], None, False
+            
+        # If there are multiple numbers (e.g., "from 100 to 500"), 
+        # first is 'from', last is 'to'.
         return decimals[0], decimals[-1], False
