@@ -231,6 +231,20 @@ class AfishaMdScraper(BaseScraper):
                 seen_urls.add(card.url)
                 if self.deep:
                     card = self._enrich_with_details(page, card)
+                
+                # Validation: Skip if no title or (if deep) no description
+                has_title = bool(card.title_ro or card.title_ru)
+                # If we are in deep mode, we EXPECT descriptions. 
+                # If not in deep mode, we allow empty descriptions for now 
+                # unless the user explicitly wants them for all events.
+                has_description = bool(card.description_ro or card.description_ru) or not self.deep
+                
+                if not has_title or (self.deep and not has_description):
+                    self.logger.warning(
+                        "Skipping event %s: missing title or description", 
+                        card.url
+                    )
+                    continue
                 yield card
 
             self.logger.info(
@@ -263,9 +277,42 @@ class AfishaMdScraper(BaseScraper):
         try:
             raw: list[dict] = page.evaluate(r"""
                 () => {
-                    const cards = [];
-                    const figures = document.querySelectorAll("figure[class*='card']");
+                    const results = [];
+                    
+                    // 1. Try to extract from __NEXT_DATA__ for accurate time/id
+                    try {
+                        const nextData = document.getElementById('__NEXT_DATA__');
+                        if (nextData) {
+                            const json = JSON.parse(nextData.textContent);
+                            const events = json.props?.pageProps?.events || [];
+                            
+                            events.forEach(ev => {
+                                const externalId = String(ev.id);
+                                // Construct URL: /ru/events/{category}/{id}/{slug}
+                                const lang = document.documentElement.lang || 'ru';
+                                const url = `https://afisha.md/${lang}/events/${ev.category?.slug || 'other'}/${externalId}/${ev.slug}`;
+                                
+                                results.push({
+                                    url,
+                                    externalId,
+                                    title: ev.title || '',
+                                    imageUrl: ev.image || '',
+                                    priceRaw: ev.price_label || '',
+                                    // Use ISO date from JSON for perfect accuracy (no 03:00 issues)
+                                    dateIso: ev.date || '', 
+                                    venue: ev.venue?.title || '',
+                                    description: ev.description || '' // Sometimes available in JSON
+                                });
+                            });
+                            
+                            if (results.length > 0) return results;
+                        }
+                    } catch (e) {
+                        console.error("NextData parse failed", e);
+                    }
 
+                    // 2. DOM Fallback
+                    const figures = document.querySelectorAll("figure[class*='card']");
                     figures.forEach(fig => {
                         const link = fig.querySelector("a[class*='cardLink']");
                         if (!link) return;
@@ -275,7 +322,6 @@ class AfishaMdScraper(BaseScraper):
                             ? href
                             : 'https://afisha.md' + href;
 
-                        // Must be an individual event URL (contains a numeric ID)
                         if (!/\/\d+\//.test(href)) return;
 
                         const img  = fig.querySelector("img[class*='cardImage']");
@@ -285,13 +331,10 @@ class AfishaMdScraper(BaseScraper):
 
                         const dateText  = textSpans[0]?.textContent?.trim() || '';
                         const venueText = textSpans[1]?.textContent?.trim() || '';
-
-                        // Extract numeric event ID from href
                         const idMatch = href.match(/\/(\d+)\//);
 
-                        cards.push({
+                        results.push({
                             url,
-                            href,
                             externalId: idMatch ? idMatch[1] : '',
                             title:      titleEl?.textContent?.trim() || '',
                             imageUrl:   img?.src || img?.getAttribute('data-src') || '',
@@ -301,7 +344,7 @@ class AfishaMdScraper(BaseScraper):
                         });
                     });
 
-                    return cards;
+                    return results;
                 }
             """)
         except Exception as exc:
@@ -315,7 +358,12 @@ class AfishaMdScraper(BaseScraper):
             if not item.get("title") or not item.get("url"):
                 continue
             price_from, price_to, is_free = self._parse_price(item.get("priceRaw", ""))
-            date_start = self._parse_date_ru(item.get("dateRaw", ""))
+            
+            # Use dateIso if available, else dateRaw
+            if item.get("dateIso"):
+                date_start = self._parse_date_ru(item["dateIso"])
+            else:
+                date_start = self._parse_date_ru(item.get("dateRaw", ""))
             
             ext_id = item.get("externalId", "")
             slug = slugify(f"afisha-{ext_id}-{item['title']}")
@@ -329,6 +377,8 @@ class AfishaMdScraper(BaseScraper):
                     provider_url="https://afisha.md",
                     title_ru=item["title"] if self.language == "ru" else "",
                     title_ro=item["title"] if self.language == "ro" else "",
+                    description_ru=item.get("description", "") if self.language == "ru" else "",
+                    description_ro=item.get("description", "") if self.language == "ro" else "",
                     external_id=ext_id,
                     categories=[CATEGORY_MAP.get(category, "other")],
                     date_start=date_start,
@@ -389,42 +439,96 @@ class AfishaMdScraper(BaseScraper):
         try:
             data: dict = page.evaluate(r"""
                 () => {
-                    const title = document.querySelector('h1')?.textContent?.trim() || '';
+                    const result = {
+                        title: '',
+                        description: '',
+                        venueAddress: '',
+                        dateEndRaw: '',
+                        timeRaw: ''
+                    };
+
+                    // 1. Try to find JSON-LD (most reliable for title/desc/time)
+                    const ldScripts = document.querySelectorAll('script[type="application/ld+json"]');
+                    for (const script of ldScripts) {
+                        try {
+                            const json = JSON.parse(script.textContent);
+                            let obj = null;
+                            if (Array.isArray(json)) {
+                                obj = json.find(o => o['@type'] === 'Event' || o['@type'] === 'MusicEvent');
+                            } else if (json['@graph']) {
+                                obj = json['@graph'].find(o => o['@type'] === 'Event' || o['@type'] === 'MusicEvent');
+                            } else if (json['@type'] === 'Event' || json['@type'] === 'MusicEvent') {
+                                obj = json;
+                            }
+
+                            if (obj) {
+                                result.title = obj.name || '';
+                                result.description = obj.description || '';
+                                if (obj.startDate) result.timeRaw = obj.startDate; 
+                                result.dateEndRaw = obj.endDate || '';
+                                if (obj.location) {
+                                    result.venueAddress = obj.location.address?.streetAddress || obj.location.name || '';
+                                }
+                                break;
+                            }
+                        } catch (e) {}
+                    }
+
+                    // 2. DOM Fallbacks
+                    if (!result.title) {
+                        result.title = document.querySelector('h1')?.textContent?.trim() || '';
+                    }
                     
-                    // --- Description ---
-                    const descSelectors = [
-                        '[class*="eventDescription"]', '[class*="description"]',
-                        '[class*="eventText"]', '[itemprop="description"]',
-                        'article p'
-                    ];
-                    let description = '';
-                    for (const sel of descSelectors) {
-                        const el = document.querySelector(sel);
-                        if (el && el.textContent.trim().length > 30) {
-                            description = el.textContent.trim();
-                            break;
+                    if (!result.description || result.description.length < 50) {
+                        const descSelectors = [
+                            '[class*="EventDescription_description"]', '.DescriptionBlock_description__text',
+                            '[class*="eventDescription"]', '[class*="description"]',
+                            '[class*="eventText"]', '[itemprop="description"]',
+                            'article p', 'h3.p1', 'p.p1'
+                        ];
+                        for (const sel of descSelectors) {
+                            const els = document.querySelectorAll(sel);
+                            let combinedText = '';
+                            els.forEach(el => {
+                                if (el.textContent.trim().length > 10) {
+                                    combinedText += el.textContent.trim() + '\n';
+                                }
+                            });
+                            if (combinedText.length > 30) {
+                                result.description = combinedText.trim();
+                                break;
+                            }
                         }
                     }
 
-                    // --- Venue address ---
-                    const addrSelectors = ['[class*="eventAddress"]', '[class*="address"]', '[itemprop="address"]'];
-                    let venueAddress = '';
-                    for (const sel of addrSelectors) {
-                        const el = document.querySelector(sel);
-                        if (el && el.textContent.trim()) {
-                            venueAddress = el.textContent.trim();
-                            break;
+                    if (!result.venueAddress) {
+                        const addrSelectors = ['[class*="eventAddress"]', '[class*="address"]', '[itemprop="address"]'];
+                        for (const sel of addrSelectors) {
+                            const el = document.querySelector(sel);
+                            if (el && el.textContent.trim()) {
+                                result.venueAddress = el.textContent.trim();
+                                break;
+                            }
                         }
                     }
-
-                    // --- Date end ---
-                    let dateEndRaw = '';
-                    const endDateEl = document.querySelector('[itemprop="endDate"], [class*="dateEnd"]');
-                    if (endDateEl) {
-                        dateEndRaw = endDateEl.getAttribute('content') || endDateEl.textContent.trim();
+                    
+                    if (!result.timeRaw) {
+                        // User's suggested selector
+                        const labelEl = document.querySelector('[class*="detailLabel"]');
+                        if (labelEl && labelEl.textContent.includes(':')) {
+                            result.timeRaw = labelEl.textContent.trim();
+                        }
+                    }
+                    
+                    if (!result.timeRaw) {
+                        // Try to find time in the sidebar or main content
+                        const text = document.body.innerText;
+                        // Look for patterns like "20:00" or "в 20:00"
+                        const timeMatch = text.match(/(?:в\s+)?(\d{2}:\d{2})/);
+                        if (timeMatch) result.timeRaw = timeMatch[1];
                     }
 
-                    return { title, description, venueAddress, dateEndRaw };
+                    return result;
                 }
             """)
         except Exception:
@@ -444,6 +548,17 @@ class AfishaMdScraper(BaseScraper):
             dt_end = self._parse_date_ru(data["dateEndRaw"])
             if dt_end:
                 event.date_end = dt_end
+
+        # Combine date_start with specific time if found
+        if data.get("timeRaw") and event.date_start:
+            try:
+                t_match = re.search(r"(\d{1,2})[:\.](\d{2})", data["timeRaw"])
+                if t_match:
+                    hour = int(t_match.group(1))
+                    minute = int(t_match.group(2))
+                    event.date_start = event.date_start.replace(hour=hour, minute=minute)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
     # Navigation helper

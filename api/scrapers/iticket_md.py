@@ -148,8 +148,21 @@ class ITicketMdScraper(BaseScraper):
             for card in new_cards:
                 if card.external_id:
                     seen_ids.add(card.external_id)
+                
                 if self.deep:
                     card = self._enrich_with_details(page, card)
+                
+                # Validation: Skip if no title or description (in any language)
+                has_title = bool(card.title_ro or card.title_ru)
+                has_description = bool(card.description_ro or card.description_ru)
+                
+                if not has_title or not has_description:
+                    self.logger.warning(
+                        "Skipping event %s: missing title or description", 
+                        card.url
+                    )
+                    continue
+                    
                 yield card
 
             self.logger.info(
@@ -311,54 +324,99 @@ class ITicketMdScraper(BaseScraper):
         try:
             data: dict = page.evaluate(r"""
                 () => {
-                    const title = document.querySelector('h1')?.textContent?.trim() || '';
-                    
-                    // --- Description ---
-                    let description = '';
-                    const schemDesc = document.querySelector('[itemprop="description"]');
-                    if (schemDesc) {
-                        description = schemDesc.getAttribute('content') || schemDesc.textContent.trim();
+                    const result = {
+                        title: '',
+                        description: '',
+                        dateEndRaw: '',
+                        venueAddress: '',
+                        timeRaw: ''
+                    };
+
+                    // 1. Try to find JSON-LD
+                    const ldScripts = document.querySelectorAll('script[type="application/ld+json"]');
+                    for (const script of ldScripts) {
+                        try {
+                            const json = JSON.parse(script.textContent);
+                            // Sometimes it's a single object, sometimes an array, sometimes @graph
+                            let obj = null;
+                            if (Array.isArray(json)) {
+                                obj = json.find(o => o['@type'] === 'Event' || o['@type'] === 'MusicEvent');
+                            } else if (json['@graph']) {
+                                obj = json['@graph'].find(o => o['@type'] === 'Event' || o['@type'] === 'MusicEvent');
+                            } else if (json['@type'] === 'Event' || json['@type'] === 'MusicEvent') {
+                                obj = json;
+                            }
+                            
+                            if (obj) {
+                                result.title = obj.name || '';
+                                result.description = obj.description || '';
+                                if (obj.startDate) result.timeRaw = obj.startDate; // Full ISO date
+                                result.dateEndRaw = obj.endDate || '';
+                                if (obj.location) {
+                                    result.venueAddress = obj.location.address?.streetAddress || obj.location.name || '';
+                                }
+                                break; 
+                            }
+                        } catch (e) {}
                     }
-                    if (!description || description.length < 50) {
+
+                    // 2. DOM Fallbacks / Overrides
+                    if (!result.title) {
+                        result.title = document.querySelector('h1.event-title')?.textContent?.trim() 
+                                    || document.querySelector('h1')?.textContent?.trim() || '';
+                    }
+                    
+                    // Specific Time Selector from user
+                    const timeEl = document.querySelector('.event-date-card-time');
+                    if (timeEl) {
+                        result.timeRaw = timeEl.textContent.trim();
+                    }
+
+                    // --- Description Fallbacks ---
+                    if (!result.description || result.description.length < 50) {
                         const candidates = [
-                            '.js-event-description', '.event-description', 
-                            '.description-content', '#event-description',
-                            '.event-text', '.description'
+                            '.js-event-description-body',
+                            '.event-description', 
+                            '.description-content', 
+                            '#event-description', 
+                            '.event-text', 
+                            '.description', 
+                            '.content', 
+                            '.js-event-description',
+                            '.event-page-content'
                         ];
                         for (const sel of candidates) {
                             const el = document.querySelector(sel);
                             if (el && el.textContent.trim().length > 30) {
-                                description = el.textContent.trim();
+                                result.description = el.textContent.trim();
                                 break;
                             }
                         }
                     }
-
-                    // --- Date end ---
-                    let dateEndRaw = '';
-                    const endEl = document.querySelector('[itemprop="endDate"]');
-                    if (endEl) {
-                        dateEndRaw = endEl.getAttribute('content') || endEl.textContent.trim();
-                    }
                     
-                    // Fallback: try to find a date range in the header/info section
-                    if (!dateEndRaw) {
-                        const headerText = document.querySelector('.event-header, .event-info, .card-header')?.textContent || '';
-                        // Look for patterns like "01.01.2024 - 05.01.2024" or "01.01 - 05.01"
-                        const rangeMatch = headerText.match(/(\d{1,2}[\.\/]\d{1,2}(?:[\.\/]\d{2,4})?)\s*[\-–—]\s*(\d{1,2}[\.\/]\d{1,2}(?:[\.\/]\d{2,4})?)/);
-                        if (rangeMatch) {
-                            dateEndRaw = rangeMatch[2];
+                    // If still empty, try to get text from all paragraphs in the main section
+                    if (!result.description || result.description.length < 50) {
+                        const main = document.querySelector('main, .event-page, #event-page');
+                        if (main) {
+                            const ps = main.querySelectorAll('p');
+                            let text = '';
+                            ps.forEach(p => {
+                                if (p.textContent.trim().length > 20) text += p.textContent.trim() + '\n';
+                            });
+                            if (text.length > 50) result.description = text.trim();
                         }
                     }
-                    
-                    // --- Venue address ---
-                    let venueAddress = '';
-                    const addrEl = document.querySelector('[itemprop="address"], .venue-address, .location-address');
-                    if (addrEl) {
-                        venueAddress = addrEl.getAttribute('content') || addrEl.textContent.trim();
                     }
 
-                    return { title, description, dateEndRaw, venueAddress };
+                    // --- Venue address fallback ---
+                    if (!result.venueAddress) {
+                        const addrEl = document.querySelector('[itemprop="address"], .venue-address, .location-address');
+                        if (addrEl) {
+                            result.venueAddress = addrEl.getAttribute('content') || addrEl.textContent.trim();
+                        }
+                    }
+
+                    return result;
                 }
             """)
         except Exception:
@@ -379,6 +437,17 @@ class ITicketMdScraper(BaseScraper):
             dt_end = self._parse_date(data["dateEndRaw"])
             if dt_end:
                 event.date_end = dt_end
+        
+        # Combine date_start with specific time if found
+        if data.get("timeRaw") and event.date_start:
+            try:
+                t_match = re.search(r"(\d{1,2})[:\.](\d{2})", data["timeRaw"])
+                if t_match:
+                    hour = int(t_match.group(1))
+                    minute = int(t_match.group(2))
+                    event.date_start = event.date_start.replace(hour=hour, minute=minute)
+            except Exception:
+                pass
 
     # ------------------------------------------------------------------
 
