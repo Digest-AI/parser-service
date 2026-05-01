@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 
+from django.db.models import Case, IntegerField, Value, When
 from django.utils import timezone
 from drf_spectacular.utils import OpenApiParameter, extend_schema, extend_schema_view
 from rest_framework import filters, status
@@ -12,7 +13,7 @@ from rest_framework.response import Response
 from rest_framework.viewsets import ReadOnlyModelViewSet
 
 from api.models import Event
-from api.serializers import EventListSerializer, EventSerializer
+from api.serializers import EventIdsRequestSerializer, EventListSerializer, EventSerializer
 
 
 class EventPagination(PageNumberPagination):
@@ -143,6 +144,69 @@ class EventViewSet(ReadOnlyModelViewSet):
             ).distinct()
 
         return qs
+
+    @extend_schema(
+        summary="Get events by ids",
+        description=(
+            "Returns active events matching the given primary keys as EventListSerializer "
+            "items inside the standard paginated envelope (count, next, previous, results). "
+            "Same list filters apply when query parameters are passed (category, provider, etc.). "
+            "Unknown or inactive ids are omitted. Order inside results follows the request ids "
+            "(duplicates removed). At most 100 ids per body; use page / page_size query params "
+            "like other event list endpoints."
+        ),
+        request=EventIdsRequestSerializer,
+        responses={
+            200: {
+                "type": "object",
+                "properties": {
+                    "count": {"type": "integer"},
+                    "next": {"type": "string", "nullable": True},
+                    "previous": {"type": "string", "nullable": True},
+                    "results": {
+                        "type": "array",
+                        "items": {"type": "object"},
+                    },
+                },
+            }
+        },
+    )
+    @action(detail=False, methods=["post"], url_path="by-ids")
+    def by_ids(self, request: Request) -> Response:
+        """POST /events/by-ids/ — batch fetch by primary key (paginated)."""
+        body = EventIdsRequestSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        raw_ids: list[int] = body.validated_data["ids"]
+        seen: set[int] = set()
+        ordered_ids: list[int] = []
+        for pk in raw_ids:
+            if pk not in seen:
+                seen.add(pk)
+                ordered_ids.append(pk)
+
+        whens = [
+            When(pk=pk, then=Value(pos)) for pos, pk in enumerate(ordered_ids)
+        ]
+        order_expr = Case(*whens, output_field=IntegerField())
+        qs = (
+            self.get_queryset()
+            .filter(pk__in=ordered_ids)
+            .annotate(_by_ids_order=order_expr)
+            .order_by("_by_ids_order")
+        )
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = EventListSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = EventListSerializer(qs, many=True)
+        return Response(
+            {
+                "count": len(serializer.data),
+                "next": None,
+                "previous": None,
+                "results": serializer.data,
+            }
+        )
 
     @extend_schema(
         summary="Trigger scrape",
@@ -305,6 +369,48 @@ class EventViewSet(ReadOnlyModelViewSet):
             target = timezone.localdate()
 
         qs = self.get_queryset().filter(date_start__date=target).order_by("date_start")
+        page = self.paginate_queryset(qs)
+        if page is not None:
+            serializer = EventListSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        serializer = EventListSerializer(qs, many=True)
+        return Response(serializer.data)
+
+    @extend_schema(
+        summary="Get events scraped on a date",
+        description=(
+            "Returns active events whose database row was created on the given calendar "
+            "day (`created_at`, scrape/import time), using EventListSerializer. "
+            "Pass `date=YYYY-MM-DD` (defaults to today in server local timezone)."
+        ),
+        parameters=[
+            OpenApiParameter(
+                "date",
+                description="Calendar date when the event record was first saved (YYYY-MM-DD)",
+                required=False,
+            ),
+        ],
+    )
+    @action(detail=False, methods=["get"], url_path="scraped-on")
+    def scraped_on(self, request: Request) -> Response:
+        """GET /events/scraped-on/?date=YYYY-MM-DD — events first scraped/saved on that day."""
+        raw_date = request.query_params.get("date")
+        if raw_date:
+            try:
+                target = datetime.date.fromisoformat(raw_date)
+            except ValueError:
+                return Response(
+                    {"error": "Invalid date format. Use YYYY-MM-DD."},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        else:
+            target = timezone.localdate()
+
+        qs = (
+            self.get_queryset()
+            .filter(created_at__date=target)
+            .order_by("-created_at")
+        )
         page = self.paginate_queryset(qs)
         if page is not None:
             serializer = EventListSerializer(page, many=True)

@@ -1,6 +1,17 @@
 from rest_framework import serializers
 
-from api.models import Event, Provider, Category
+from api.models import Category, Event, Provider
+
+
+class EventIdsRequestSerializer(serializers.Serializer):
+    """Batch lookup body for POST /events/by-ids/."""
+
+    ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        min_length=1,
+        max_length=100,
+        help_text="Event primary keys (max 100). Order is preserved in the response.",
+    )
 
 
 class ProviderSerializer(serializers.ModelSerializer):

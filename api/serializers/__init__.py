@@ -1,3 +1,3 @@
-from api.serializers.event import EventListSerializer, EventSerializer
+from api.serializers.event import EventIdsRequestSerializer, EventListSerializer, EventSerializer
 
-__all__ = ["EventSerializer", "EventListSerializer"]
+__all__ = ["EventSerializer", "EventListSerializer", "EventIdsRequestSerializer"]
