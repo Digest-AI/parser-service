@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from django.db.models import Count
+from django.db.models import Count, Q
 from drf_spectacular.utils import extend_schema
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -17,21 +17,16 @@ from api.models import Provider
     ),
     responses={
         200: {
-            "type": "object",
-            "properties": {
-                "providers": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": {"type": "integer"},
-                            "slug": {"type": "string", "example": "afisha_md"},
-                            "name": {"type": "string", "example": "Afisha.md"},
-                            "url": {"type": "string"},
-                            "count": {"type": "integer", "example": 120},
-                        },
-                    },
-                }
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "slug": {"type": "string", "example": "afisha_md"},
+                    "name": {"type": "string", "example": "Afisha.md"},
+                    "url": {"type": "string"},
+                    "count": {"type": "integer", "example": 120},
+                },
             },
         }
     },
@@ -41,9 +36,9 @@ class SourceListView(APIView):
 
     def get(self, request: Request) -> Response:
         providers = Provider.objects.annotate(
-            count=Count('events', filter=Count('events__is_active'))
+            count=Count("events", filter=Q(events__is_active=True)),
         )
-        
+
         data = [
             {
                 "id": p.id,
@@ -55,4 +50,4 @@ class SourceListView(APIView):
             for p in providers
         ]
 
-        return Response({"providers": data}) # keep key "providers" or "sources" based on URL maybe. Let's return "providers"
+        return Response(data)

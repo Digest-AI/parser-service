@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from django.db.models import Count
+from django.db.models import Count, Q
 from drf_spectacular.utils import extend_schema
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from api.models import Category
-from api.serializers.event import CategorySerializer
 
 @extend_schema(
     summary="List categories",
@@ -17,21 +16,16 @@ from api.serializers.event import CategorySerializer
     ),
     responses={
         200: {
-            "type": "object",
-            "properties": {
-                "categories": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "id": {"type": "integer"},
-                            "slug": {"type": "string", "example": "concert"},
-                            "name_ru": {"type": "string", "example": "Концерт"},
-                            "name_ro": {"type": "string", "example": "Concert"},
-                            "count": {"type": "integer", "example": 42},
-                        },
-                    },
-                }
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "integer"},
+                    "slug": {"type": "string", "example": "concert"},
+                    "name_ru": {"type": "string", "example": "Концерт"},
+                    "name_ro": {"type": "string", "example": "Concert"},
+                    "count": {"type": "integer", "example": 42},
+                },
             },
         }
     },
@@ -41,7 +35,7 @@ class CategoryListView(APIView):
 
     def get(self, request: Request) -> Response:
         categories = Category.objects.annotate(
-            count=Count('events', filter=Count('events__is_active'))
+            count=Count("events", filter=Q(events__is_active=True)),
         )
         
         data = [
@@ -55,4 +49,4 @@ class CategoryListView(APIView):
             for cat in categories
         ]
 
-        return Response({"categories": data})
+        return Response(data)
