@@ -110,12 +110,20 @@ class BaseScraper(ABC):
                     existing = Event.objects.filter(url=event_data.url).first()
 
                 if existing:
-                    # Update
+                    # Update (merge non-empty fields)
+                    changed = False
                     for k, v in defaults.items():
-                        setattr(existing, k, v)
-                    existing.save()
-                    existing.categories.set(cats)
-                    updated += 1
+                        current_val = getattr(existing, k)
+                        # Only update if the new value is non-empty, 
+                        # or if the current value is empty/None
+                        if v and v != current_val:
+                            setattr(existing, k, v)
+                            changed = True
+                    
+                    if changed:
+                        existing.save()
+                        existing.categories.set(cats)
+                        updated += 1
                 else:
                     # Create
                     defaults["provider"] = provider

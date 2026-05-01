@@ -190,6 +190,7 @@ class ITicketMdScraper(BaseScraper):
                         const highPriceEl = card.querySelector('meta[itemprop="highPrice"]');
                         const currencyEl = card.querySelector('meta[itemprop="priceCurrency"]');
                         const startDateEl = card.querySelector('meta[itemprop="startDate"]');
+                        const endDateEl = card.querySelector('meta[itemprop="endDate"]');
                         const locationNameEl = card.querySelector('div[itemprop="location"] meta[itemprop="name"]');
                         const locationAddressEl = card.querySelector('div[itemprop="location"] meta[itemprop="address"]');
 
@@ -207,6 +208,7 @@ class ITicketMdScraper(BaseScraper):
                             priceHigh: highPriceEl?.content || '',
                             currency: currencyEl?.content || 'MDL',
                             startDate: startDateEl?.content || '',
+                            endDate: endDateEl?.content || '',
                             venueName: locationNameEl?.content || '',
                             venueAddress: locationAddressEl?.content || '',
                         });
@@ -230,6 +232,7 @@ class ITicketMdScraper(BaseScraper):
                 item.get("priceLow", ""), item.get("priceHigh", "")
             )
             date_start = self._parse_date(item.get("startDate", ""))
+            date_end = self._parse_date(item.get("endDate", ""))
             
             ext_id = item.get("externalId", "")
             slug = slugify(f"iticket-{ext_id}-{item['title']}")
@@ -246,6 +249,7 @@ class ITicketMdScraper(BaseScraper):
                     external_id=ext_id,
                     categories=[CATEGORY_MAP.get(category, "other")],
                     date_start=date_start,
+                    date_end=date_end,
                     place=item.get("venueName", ""),
                     address=item.get("venueAddress", ""),
                     city="Chișinău",  # iTicket doesn't clearly split city, assuming Chisinau for now
@@ -264,56 +268,70 @@ class ITicketMdScraper(BaseScraper):
 
     def _enrich_with_details(self, page: Any, event: EventData) -> EventData:
         """
-        Visit the individual event page and enrich *event* with:
-        - Full description (RO or RU depending on language)
-        - Venue address (full, not just name)
-        - date_end
-        - og:image fallback
+        Visit the individual event page and enrich *event* with both RU and RO details.
         """
-        if not self._navigate(page, event.url):
-            return event
+        # We need to visit both RO and RU versions if possible
+        # iTicket URLs: https://iticket.md/event/slug (default/RO) or https://iticket.md/ru/event/slug (RU)
+        
+        current_url = event.url
+        # Determine the alternate language URL
+        if "/ru/event/" in current_url:
+            ro_url = current_url.replace("/ru/event/", "/event/")
+            ru_url = current_url
+        else:
+            ro_url = current_url
+            # it might be /en/event/ or just /event/
+            if "iticket.md/en/event/" in current_url:
+                ru_url = current_url.replace("iticket.md/en/event/", "iticket.md/ru/event/")
+            else:
+                ru_url = current_url.replace("iticket.md/event/", "iticket.md/ru/event/")
 
+        # 1. Fetch current page
+        self._enrich_from_page(page, event, current_url)
+        
+        # 2. Fetch alternate page
+        alt_url = ru_url if current_url == ro_url else ro_url
+        if alt_url != current_url:
+            self._enrich_from_page(page, event, alt_url)
+
+        return event
+
+    def _enrich_from_page(self, page: Any, event: EventData, url: str) -> None:
+        """Helper to extract localized data from a single detail page."""
+        if not self._navigate(page, url):
+            return
+
+        lang = "ru" if "/ru/event/" in url else "ro"
+        
         try:
-            page.wait_for_selector(
-                ".event-page, .event-detail, [itemprop='description'], main",
-                timeout=8_000,
-            )
+            page.wait_for_selector(".event-page, .event-detail, [itemprop='description'], main", timeout=5_000)
         except Exception:
-            self.logger.debug("Detail page selector not found for %s", event.url)
+            pass
 
         try:
-            details: dict = page.evaluate("""
+            data: dict = page.evaluate(r"""
                 () => {
-                    // --- Description (prefer schema.org, fallback to visible text) ---
+                    const title = document.querySelector('h1')?.textContent?.trim() || '';
+                    
+                    // --- Description ---
                     let description = '';
                     const schemDesc = document.querySelector('[itemprop="description"]');
                     if (schemDesc) {
-                        description = schemDesc.getAttribute('content') ||
-                                      schemDesc.textContent.trim();
+                        description = schemDesc.getAttribute('content') || schemDesc.textContent.trim();
                     }
-                    if (!description) {
+                    if (!description || description.length < 50) {
                         const candidates = [
-                            '.event-description', '.description',
-                            '.event-content', '.event-text',
-                            'article p',
+                            '.js-event-description', '.event-description', 
+                            '.description-content', '#event-description',
+                            '.event-text', '.description'
                         ];
                         for (const sel of candidates) {
                             const el = document.querySelector(sel);
-                            if (el && el.textContent.trim().length > 20) {
+                            if (el && el.textContent.trim().length > 30) {
                                 description = el.textContent.trim();
                                 break;
                             }
                         }
-                    }
-
-                    // --- Full venue address ---
-                    let venueAddress = '';
-                    const addrEl = document.querySelector(
-                        '[itemprop="address"], .venue-address, .event-address, .location-address'
-                    );
-                    if (addrEl) {
-                        venueAddress = addrEl.getAttribute('content') ||
-                                       addrEl.textContent.trim();
                     }
 
                     // --- Date end ---
@@ -322,38 +340,45 @@ class ITicketMdScraper(BaseScraper):
                     if (endEl) {
                         dateEndRaw = endEl.getAttribute('content') || endEl.textContent.trim();
                     }
+                    
+                    // Fallback: try to find a date range in the header/info section
+                    if (!dateEndRaw) {
+                        const headerText = document.querySelector('.event-header, .event-info, .card-header')?.textContent || '';
+                        // Look for patterns like "01.01.2024 - 05.01.2024" or "01.01 - 05.01"
+                        const rangeMatch = headerText.match(/(\d{1,2}[\.\/]\d{1,2}(?:[\.\/]\d{2,4})?)\s*[\-–—]\s*(\d{1,2}[\.\/]\d{1,2}(?:[\.\/]\d{2,4})?)/);
+                        if (rangeMatch) {
+                            dateEndRaw = rangeMatch[2];
+                        }
+                    }
+                    
+                    // --- Venue address ---
+                    let venueAddress = '';
+                    const addrEl = document.querySelector('[itemprop="address"], .venue-address, .location-address');
+                    if (addrEl) {
+                        venueAddress = addrEl.getAttribute('content') || addrEl.textContent.trim();
+                    }
 
-                    // --- OG image fallback ---
-                    let imageUrl = '';
-                    const ogImg = document.querySelector('meta[property="og:image"]');
-                    if (ogImg) imageUrl = ogImg.getAttribute('content') || '';
-
-                    return { description, venueAddress, dateEndRaw, imageUrl };
+                    return { title, description, dateEndRaw, venueAddress };
                 }
             """)
-        except Exception as exc:
-            self.logger.warning("Detail extraction failed for %s: %s", event.url, exc)
-            return event
+        except Exception:
+            return
 
-        if details.get("description"):
-            if self.language == "ro":
-                event.description_ro = details["description"]
-            else:
-                event.description_ru = details["description"]
+        # Assign values based on detected language
+        if lang == "ru":
+            if data["title"]: event.title_ru = data["title"]
+            if data["description"]: event.description_ru = data["description"]
+        else:
+            if data["title"]: event.title_ro = data["title"]
+            if data["description"]: event.description_ro = data["description"]
 
-        if details.get("venueAddress") and not event.address:
-            event.address = details["venueAddress"]
+        if data.get("venueAddress") and not event.address:
+            event.address = data["venueAddress"]
 
-        if details.get("imageUrl") and not event.image_url:
-            event.image_url = details["imageUrl"]
-
-        if details.get("dateEndRaw"):
-            date_end = self._parse_date(details["dateEndRaw"])
-            if date_end:
-                event.date_end = date_end
-
-        self.logger.debug("Enriched: %s", event.url)
-        return event
+        if data.get("dateEndRaw") and not event.date_end:
+            dt_end = self._parse_date(data["dateEndRaw"])
+            if dt_end:
+                event.date_end = dt_end
 
     # ------------------------------------------------------------------
 
@@ -376,19 +401,33 @@ class ITicketMdScraper(BaseScraper):
 
     def _parse_date(self, raw: str) -> datetime | None:
         """
-        Parse ISO 8601 date strings from schema.org:
-        e.g., "2026-05-03T11:00:00+03:00"
+        Parse date strings from schema (ISO) or text (DD.MM.YYYY).
         """
         if not raw:
             return None
+        raw = raw.strip()
+        
+        # 1. ISO 8601
         try:
             dt = datetime.fromisoformat(raw)
-            # Make it aware using Django TZ if it's naive (fromisoformat preserves TZ if present)
-            if tz.is_naive(dt):
-                return tz.make_aware(dt)
-            return dt
+            return tz.make_aware(dt) if tz.is_naive(dt) else dt
         except ValueError:
-            return None
+            pass
+            
+        # 2. DD.MM.YYYY or DD.MM
+        import re
+        m = re.search(r"(\d{1,2})\.(\d{1,2})(?:\.(\d{4}))?", raw)
+        if m:
+            day = int(m.group(1))
+            month = int(m.group(2))
+            year = int(m.group(3)) if m.group(3) else tz.now().year
+            try:
+                dt = datetime(year, month, day)
+                return tz.make_aware(dt) if tz.is_naive(dt) else dt
+            except ValueError:
+                pass
+                
+        return None
 
     def _parse_price(
         self, low: str, high: str
